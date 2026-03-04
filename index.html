@@ -202,6 +202,7 @@ let entities = [];
 let items = [];
 let tiles = [];
 let camera = { x: 0, y: 0 };
+let viewCX = 0, viewCY = 0; // stable canvas center, set in resizeCanvas only
 let gameTime = 0;
 let score = 0;
 let kills = 0, itemsCollected = 0, goalsCompleted = 0;
@@ -620,8 +621,8 @@ function addLog(msg, cls) {
 // --- Rendering ---
 function drawTile(x, y) {
   let p = isoProject(x, y);
-  let sx = p.sx - camera.x + canvas.width / 2;
-  let sy = p.sy - camera.y + canvas.height / 2;
+  let sx = p.sx - camera.x + viewCX;
+  let sy = p.sy - camera.y + viewCY;
 
   if (sx < -TILE_W*2 || sx > canvas.width + TILE_W*2 || sy < -TILE_H*4 || sy > canvas.height + TILE_H*4) return;
 
@@ -701,8 +702,8 @@ function drawTile(x, y) {
 
 function drawItem(item) {
   let p = isoProject(item.x, item.y);
-  let sx = p.sx - camera.x + canvas.width / 2;
-  let sy = p.sy - camera.y + canvas.height / 2;
+  let sx = p.sx - camera.x + viewCX;
+  let sy = p.sy - camera.y + viewCY;
   if (sx < -50 || sx > canvas.width + 50 || sy < -50 || sy > canvas.height + 50) return;
 
   let bob = Math.sin(animTime * 2 + item.bobOffset) * 4;
@@ -733,8 +734,8 @@ function drawEntity(entity) {
   let px = entity.renderX !== undefined ? entity.renderX : entity.x;
   let py = entity.renderY !== undefined ? entity.renderY : entity.y;
   let p = isoProject(px, py);
-  let sx = p.sx - camera.x + canvas.width / 2;
-  let sy = p.sy - camera.y + canvas.height / 2;
+  let sx = p.sx - camera.x + viewCX;
+  let sy = p.sy - camera.y + viewCY;
   if (sx < -60 || sx > canvas.width + 60 || sy < -60 || sy > canvas.height + 60) return;
 
   let scale = 1, alpha = 1;
@@ -817,8 +818,8 @@ function drawEntity(entity) {
 
 function drawRemotePlayer(rp) {
   let p = isoProject(rp.x, rp.y);
-  let sx = p.sx - camera.x + canvas.width / 2;
-  let sy = p.sy - camera.y + canvas.height / 2;
+  let sx = p.sx - camera.x + viewCX;
+  let sy = p.sy - camera.y + viewCY;
   if (sx < -60 || sx > canvas.width + 60 || sy < -60 || sy > canvas.height + 60) return;
 
   let bw = 14, bh = 22, by = sy - bh - 2;
@@ -848,8 +849,8 @@ function drawFloatingTexts(dt) {
     if (ft.life <= 0) { floatingTexts.splice(i, 1); continue; }
 
     let p = isoProject(ft.x, ft.y);
-    let sx = p.sx - camera.x + canvas.width / 2;
-    let sy = p.sy - camera.y + canvas.height / 2 - 30 - (1 - ft.life) * 30;
+    let sx = p.sx - camera.x + viewCX;
+    let sy = p.sy - camera.y + viewCY - 30 - (1 - ft.life) * 30;
 
     ctx.globalAlpha = ft.life;
     ctx.fillStyle = ft.color;
@@ -919,7 +920,6 @@ function render(timestamp) {
   // Minimap
   drawMinimap();
 
-  updateUI();
   requestAnimationFrame(render);
 }
 
@@ -1039,6 +1039,7 @@ function updateUI() {
 function gameTick() {
   if (!player) return;
   gameTime += 0.5;
+  updateUI();
 
   // Player movement
   if (player.alive) {
@@ -1342,18 +1343,23 @@ document.addEventListener('click', () => { if (!audioUnlocked) initAudio(); });
 
 // --- Init ---
 function resizeCanvas() {
-  const container = document.getElementById('canvas-container');
-  const w = container.clientWidth;
-  const h = container.clientHeight;
+  // Use window size minus fixed bar heights (44px top + 48px bottom)
+  const w = window.innerWidth - 200 - 220; // minus left/right panels
+  const h = window.innerHeight - 44 - 48;  // minus top/bottom bars
   if (canvas.width !== w || canvas.height !== h) {
     canvas.width = w;
     canvas.height = h;
-    // Re-snap camera after resize so the player stays centered
-    if (player) {
-      const pp = isoProject(player.x, player.y);
-      camera.x = pp.sx;
-      camera.y = pp.sy;
-    }
+    canvas.style.width = w + 'px';
+    canvas.style.height = h + 'px';
+  }
+  // Always update stable center vars
+  viewCX = canvas.width / 2;
+  viewCY = canvas.height / 2;
+  // Snap camera after resize
+  if (player) {
+    const pp = isoProject(player.x, player.y);
+    camera.x = pp.sx;
+    camera.y = pp.sy;
   }
 }
 
