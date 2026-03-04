@@ -48,6 +48,7 @@ body { background: #1a1a2e; color: #eee; font-family: 'Segoe UI', Tahoma, Geneva
 .log-item { color: #ffcc44; }
 .log-goal { color: #44ffcc; }
 .log-world { color: #cc88ff; }
+.log-recruit { color: #7fffbf; }
 #nearby-panel { border-top: 1px solid #3a2a5a; padding: 8px; max-height: 200px; overflow-y: auto; }
 #nearby-panel h3 { font-size: 12px; color: #888; text-transform: uppercase; margin-bottom: 4px; }
 .nearby-entity { font-size: 11px; padding: 2px 0; display: flex; justify-content: space-between; }
@@ -57,9 +58,13 @@ body { background: #1a1a2e; color: #eee; font-family: 'Segoe UI', Tahoma, Geneva
 #btn-special { padding: 8px 24px; background: linear-gradient(180deg, #6a3aaa, #4a2a7a); border: 1px solid #8a5aca; color: #fff; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: bold; transition: all 0.2s; }
 #btn-special:hover { background: linear-gradient(180deg, #8a5aca, #6a3aaa); }
 #btn-special:disabled { opacity: 0.4; cursor: default; }
+#btn-recruit { padding: 8px 24px; background: linear-gradient(180deg, #2a8a4a, #1a6a3a); border: 1px solid #4aca6a; color: #fff; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: bold; transition: all 0.2s; }
+#btn-recruit:hover { background: linear-gradient(180deg, #3aaa5a, #2a8a4a); }
+#btn-recruit:disabled { opacity: 0.4; cursor: default; }
 #btn-wait { padding: 8px 16px; background: #333; border: 1px solid #555; color: #aaa; border-radius: 6px; cursor: pointer; font-size: 13px; }
 #btn-wait:hover { background: #444; }
 #cooldown-text { font-size: 12px; color: #aaa; }
+#recruit-cooldown-text { font-size: 12px; color: #aaa; }
 
 /* Creation overlay */
 #creation-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.85); display: flex; align-items: center; justify-content: center; z-index: 100; }
@@ -160,6 +165,8 @@ body { background: #1a1a2e; color: #eee; font-family: 'Segoe UI', Tahoma, Geneva
   <div id="bottom-bar">
     <button id="btn-special" disabled>Special Ability</button>
     <span id="cooldown-text"></span>
+    <button id="btn-recruit" disabled>Recruit</button>
+    <span id="recruit-cooldown-text"></span>
     <button id="btn-wait" onclick="playerWait()">WAIT</button>
   </div>
 </div>
@@ -194,6 +201,7 @@ const ITEM_DEFS = {
   int: { names:['Tome of Knowledge','Mystic Orb','Sage Staff'], color:'#a040e0' },
   cmd: { names:['Warlord Banner','Horn of Command','General Badge'], color:'#e08020' }
 };
+const BASE_SPEED = 1.5; // tiles/second at speed 1
 
 // --- State ---
 let playerId = crypto.randomUUID();
@@ -202,7 +210,7 @@ let entities = [];
 let items = [];
 let tiles = [];
 let camera = { x: 0, y: 0 };
-let viewCX = 0, viewCY = 0; // stable canvas center, set in resizeCanvas only
+let viewCX = 0, viewCY = 0;
 let gameTime = 0;
 let score = 0;
 let kills = 0, itemsCollected = 0, goalsCompleted = 0;
@@ -217,12 +225,23 @@ let audioUnlocked = false;
 let lastFrameTime = 0;
 let animTime = 0;
 let keysDown = {};
-let moveCooldown = 0;
 let channel = null;
 let aiSpawnTimer = 0;
 let worldUpdateTimer = 0;
 let isDead = false;
 let inventoryLog = [];
+let healTimer = 0; // healing counter: increments each gameTick, heals at 6
+let recruitCooldown = 0; // recruit cooldown in seconds
+let recruitCooldownTimer = 0; // ms counter for recruit cooldown
+let playerAttackCooldown = 0; // cooldown for player melee attacks (seconds)
+
+// --- Seeded random for tile decorations ---
+function tileRand(x, y, seed) {
+  let h = (x * 374761393 + y * 668265263 + seed * 1274126177) ^ 0x5bf03635;
+  h = Math.imul(h ^ (h >>> 13), 0x5bd1e995);
+  h = h ^ (h >>> 15);
+  return (h >>> 0) / 4294967296;
+}
 
 // --- Map Generation ---
 function generateMap() {
@@ -233,19 +252,62 @@ function generateMap() {
       let r = Math.random();
       if (x === 0 || y === 0 || x === MAP_SIZE-1 || y === MAP_SIZE-1) {
         tiles[y][x] = 'wall';
-      } else if (r < 0.55) {
+      } else if (r < 0.42) {
         tiles[y][x] = 'grass';
-      } else if (r < 0.72) {
+      } else if (r < 0.56) {
         tiles[y][x] = 'forest';
-      } else if (r < 0.82) {
+      } else if (r < 0.65) {
         tiles[y][x] = 'stone';
-      } else if (r < 0.90) {
+      } else if (r < 0.73) {
         tiles[y][x] = 'water';
+      } else if (r < 0.78) {
+        tiles[y][x] = 'sand';
+      } else if (r < 0.82) {
+        tiles[y][x] = 'swamp';
+      } else if (r < 0.85) {
+        tiles[y][x] = 'ice';
+      } else if (r < 0.87) {
+        tiles[y][x] = 'lava';
       } else {
         tiles[y][x] = 'grass';
       }
     }
   }
+
+  // Add bridges over water: scan for water tiles and occasionally place bridge
+  for (let y = 2; y < MAP_SIZE-2; y++) {
+    for (let x = 2; x < MAP_SIZE-2; x++) {
+      if (tiles[y][x] === 'water') {
+        // horizontal bridge
+        if (x > 1 && x < MAP_SIZE-2 && tiles[y][x-1] !== 'water' && tiles[y][x+1] === 'water' && tiles[y][x+2] !== 'water' && Math.random() < 0.15) {
+          tiles[y][x] = 'bridge';
+          tiles[y][x+1] = 'bridge';
+        }
+        // vertical bridge
+        if (y > 1 && y < MAP_SIZE-2 && tiles[y-1][x] !== 'water' && tiles[y+1][x] === 'water' && tiles[y+2][x] !== 'water' && Math.random() < 0.15) {
+          tiles[y][x] = 'bridge';
+          tiles[y+1][x] = 'bridge';
+        }
+      }
+    }
+  }
+
+  // Sand clusters: expand existing sand tiles
+  for (let y = 2; y < MAP_SIZE-2; y++) {
+    for (let x = 2; x < MAP_SIZE-2; x++) {
+      if (tiles[y][x] === 'sand' && Math.random() < 0.4) {
+        for (let dy = -1; dy <= 1; dy++) {
+          for (let dx = -1; dx <= 1; dx++) {
+            let nx = x+dx, ny = y+dy;
+            if (nx > 0 && nx < MAP_SIZE-1 && ny > 0 && ny < MAP_SIZE-1 && tiles[ny][nx] === 'grass') {
+              tiles[ny][nx] = 'sand';
+            }
+          }
+        }
+      }
+    }
+  }
+
   // Dungeon room
   let dx = 12 + Math.floor(Math.random()*8);
   let dy = 12 + Math.floor(Math.random()*8);
@@ -281,6 +343,7 @@ function getClass(stats) {
 }
 
 function dist(a, b) { return Math.abs(a.x - b.x) + Math.abs(a.y - b.y); }
+function distFloat(a, b) { return Math.sqrt((a.x - b.x)**2 + (a.y - b.y)**2); }
 
 function isoProject(tx, ty) {
   return { sx: (tx - ty) * (TILE_W / 2), sy: (tx + ty) * (TILE_H / 2) };
@@ -289,7 +352,7 @@ function isoProject(tx, ty) {
 function walkable(x, y) {
   if (x < 0 || y < 0 || x >= MAP_SIZE || y >= MAP_SIZE) return false;
   let t = tiles[y][x];
-  return t !== 'wall' && t !== 'water';
+  return t !== 'wall' && t !== 'water' && t !== 'lava';
 }
 
 function randomName() {
@@ -345,6 +408,7 @@ function playGoalComplete() {
 }
 function playStep() { playNoise(0.05, 0.04); }
 function playSpecial() { playSound(330, 'triangle', 0.3, 660, 0.15); }
+function playRecruit() { playSound(392, 'sine', 0.25, 523, 0.12); }
 
 // --- Entity Factory ---
 function createEntity(name, isPlayer, id) {
@@ -368,7 +432,11 @@ function createEntity(name, isPlayer, id) {
     deathAnim: 0,
     color: CLASS_COLORS[cls],
     rallyBonus: 0,
-    lastAttacker: null
+    lastAttacker: null,
+    isAlly: false,
+    // Smooth movement
+    moveVX: 0, moveVY: 0, // current movement direction (-1, 0, 1)
+    stepSoundTimer: 0
   };
 }
 
@@ -472,6 +540,11 @@ function performAttack(attacker, defender) {
         score += 10;
         for (let g of goals) if (g.type === 'defeat') g.progress++;
       }
+      if (attacker.isAlly) {
+        kills++;
+        score += 5;
+        for (let g of goals) if (g.type === 'defeat') g.progress++;
+      }
       if (defender.isPlayer && defender.id === playerId) showDeath();
     }
   } else {
@@ -498,7 +571,7 @@ function useSpecial(entity) {
       addLog(entity.name+' prepares Evasion!', 'log-info');
       break;
     case 'Mage': {
-      let nearby = entities.filter(e => e.alive && e.id !== entity.id && dist(e, entity) <= 3);
+      let nearby = entities.filter(e => e.alive && e.id !== entity.id && !e.isAlly && distFloat(e, entity) <= 3);
       let dmg = entity.stats.ene;
       for (let e of nearby) {
         e.hp -= dmg;
@@ -518,7 +591,7 @@ function useSpecial(entity) {
       addLog(entity.name+' activates Mind Link!', 'log-info');
       break;
     case 'Commander': {
-      let allies = entities.filter(e => e.alive && e.id !== entity.id && dist(e, entity) <= 3);
+      let allies = entities.filter(e => e.alive && e.id !== entity.id && distFloat(e, entity) <= 3);
       for (let a of allies) a.rallyBonus = 2;
       addLog(entity.name+' uses Rally! Nearby allies get +2!', 'log-info');
       break;
@@ -527,37 +600,157 @@ function useSpecial(entity) {
   return true;
 }
 
-// --- AI Behavior ---
+// --- Smooth Movement ---
+function getEntitySpeed(entity) {
+  return BASE_SPEED * entity.stats.spd; // tiles per second
+}
+
+function moveEntitySmooth(entity, dx, dy, dt) {
+  if (!entity.alive) return;
+  let speed = getEntitySpeed(entity);
+  let moveAmount = speed * dt;
+
+  // Normalize diagonal movement
+  if (dx !== 0 && dy !== 0) {
+    moveAmount *= 0.7071; // 1/sqrt(2)
+  }
+
+  let newX = entity.x + dx * moveAmount;
+  let newY = entity.y + dy * moveAmount;
+
+  // Check collision at destination integer coords
+  let destTileX = Math.floor(dx > 0 ? Math.ceil(newX) : Math.floor(newX));
+  let destTileY = Math.floor(dy > 0 ? Math.ceil(newY) : Math.floor(newY));
+
+  // Check horizontal movement
+  let canMoveX = true;
+  if (dx !== 0) {
+    let checkX = dx > 0 ? Math.floor(newX + 0.3) : Math.ceil(newX - 0.3);
+    let checkY1 = Math.floor(entity.y);
+    let checkY2 = Math.ceil(entity.y);
+    if (!walkable(checkX, checkY1) || (checkY2 !== checkY1 && !walkable(checkX, checkY2))) {
+      canMoveX = false;
+    }
+  }
+
+  // Check vertical movement
+  let canMoveY = true;
+  if (dy !== 0) {
+    let checkY = dy > 0 ? Math.floor(newY + 0.3) : Math.ceil(newY - 0.3);
+    let checkX1 = Math.floor(entity.x);
+    let checkX2 = Math.ceil(entity.x);
+    if (!walkable(checkX1, checkY) || (checkX2 !== checkX1 && !walkable(checkX2, checkY))) {
+      canMoveY = false;
+    }
+  }
+
+  if (canMoveX) entity.x = Math.max(0.5, Math.min(MAP_SIZE - 1.5, entity.x + dx * moveAmount));
+  if (canMoveY) entity.y = Math.max(0.5, Math.min(MAP_SIZE - 1.5, entity.y + dy * moveAmount));
+
+  return canMoveX || canMoveY;
+}
+
+function updatePlayerMovement(dt) {
+  if (!player || !player.alive || isDead) return;
+
+  let dx = 0, dy = 0;
+  if (keysDown['ArrowUp'] || keysDown['KeyW']) dy = -1;
+  if (keysDown['ArrowDown'] || keysDown['KeyS']) dy = 1;
+  if (keysDown['ArrowLeft'] || keysDown['KeyA']) dx = -1;
+  if (keysDown['ArrowRight'] || keysDown['KeyD']) dx = 1;
+
+  if (dx !== 0 || dy !== 0) {
+    let moved = moveEntitySmooth(player, dx, dy, dt);
+    if (moved) {
+      player.stepSoundTimer -= dt;
+      if (player.stepSoundTimer <= 0) {
+        playStep();
+        player.stepSoundTimer = 0.3;
+      }
+    }
+
+    // Item pickup (check float position)
+    let px = Math.round(player.x), py = Math.round(player.y);
+    for (let i = items.length - 1; i >= 0; i--) {
+      if (Math.abs(items[i].x - player.x) < 0.7 && Math.abs(items[i].y - player.y) < 0.7) {
+        let item = items[i];
+        if (player.stats[item.stat] < 9) {
+          player.stats[item.stat]++;
+          if (item.stat === 'ene') { player.maxHp = 10 + player.stats.ene * 2; player.hp = Math.min(player.hp + 2, player.maxHp); }
+          if (item.stat === 'int') player.specialMaxCooldown = Math.max(3, 10 - player.stats.int);
+        }
+        addLog('Picked up '+item.name+'! (+1 '+STAT_LABELS[item.stat]+')', 'log-item');
+        playPickup();
+        itemsCollected++;
+        inventoryLog.push({ name: item.name, color: item.color });
+        for (let g of goals) if (g.type === 'collect') g.progress++;
+        items.splice(i, 1);
+        break;
+      }
+    }
+
+    // Dungeon goal
+    let tileAtPlayer = tiles[Math.round(player.y)];
+    if (tileAtPlayer && tileAtPlayer[Math.round(player.x)] === 'dungeon') {
+      for (let g of goals) if (g.type === 'dungeon') g.progress = 1;
+    }
+
+    // Auto-attack: check for nearby enemies when walking into them
+    if (playerAttackCooldown <= 0) {
+      for (let e of entities) {
+        if (e === player || !e.alive || e.isAlly) continue;
+        if (distFloat(player, e) < 1.0) {
+          performAttack(player, e);
+          playerAttackCooldown = Math.max(0.3, 1.0 - player.stats.spd * 0.1);
+          break;
+        }
+      }
+    }
+  }
+
+  if (playerAttackCooldown > 0) playerAttackCooldown -= dt;
+}
+
+// --- AI Behavior (smooth) ---
 function aiTick(entity, dt) {
   if (!entity.alive || entity.isPlayer) return;
-  entity.aiTimer -= dt;
+  entity.aiTimer -= dt * 1000;
   if (entity.aiTimer > 0) return;
-  entity.aiTimer = 500;
+  entity.aiTimer = 300 + Math.random() * 200; // retarget every 300-500ms
 
-  entity.combatTimer -= 500;
+  entity.combatTimer -= dt * 1000;
   if (entity.combatTimer < 0) entity.combatTimer = 0;
 
   let hpPct = entity.hp / entity.maxHp;
 
   // Find all potential targets
-  let allTargets = entities.filter(e => e.alive && e.id !== entity.id);
-  // Add remote players
-  for (let rp of Object.values(remotePlayers)) {
-    if (rp.alive) allTargets.push(rp);
+  let allTargets;
+  if (entity.isAlly) {
+    // Allies attack enemies (non-ally, non-player AIs)
+    allTargets = entities.filter(e => e.alive && e.id !== entity.id && !e.isPlayer && !e.isAlly);
+  } else {
+    // Enemies attack everyone except other non-ally enemies... actually they attack all
+    allTargets = entities.filter(e => e.alive && e.id !== entity.id);
+    // Add remote players
+    for (let rp of Object.values(remotePlayers)) {
+      if (rp.alive) allTargets.push(rp);
+    }
   }
 
   let nearest = null, nearDist = Infinity;
   for (let t of allTargets) {
-    let d = dist(entity, t);
+    let d = distFloat(entity, t);
     if (d < nearDist) { nearDist = d; nearest = t; }
   }
 
+  // Set movement direction based on AI decision
+  entity.moveVX = 0;
+  entity.moveVY = 0;
+
   // Flee if low HP
   if (hpPct < 0.2 && nearest && nearDist < 5) {
-    let dx = Math.sign(entity.x - nearest.x);
-    let dy = Math.sign(entity.y - nearest.y);
-    let nx = entity.x + (dx || 1), ny = entity.y + (dy || 1);
-    if (walkable(nx, ny) && !entityAt(nx, ny)) { entity.x = nx; entity.y = ny; }
+    entity.moveVX = Math.sign(entity.x - nearest.x) || 1;
+    entity.moveVY = Math.sign(entity.y - nearest.y) || 1;
     return;
   }
 
@@ -566,8 +759,8 @@ function aiTick(entity, dt) {
     useSpecial(entity);
   }
 
-  // Attack if adjacent
-  if (nearest && nearDist <= 1 && entity.combatTimer <= 0) {
+  // Attack if close
+  if (nearest && nearDist <= 1.2 && entity.combatTimer <= 0) {
     let realTarget = entities.find(e => e.id === nearest.id);
     if (realTarget && realTarget.alive) {
       performAttack(entity, realTarget);
@@ -576,27 +769,63 @@ function aiTick(entity, dt) {
     return;
   }
 
-  // Chase if within 5 tiles
-  if (nearest && nearDist <= 5) {
-    let dx = Math.sign(nearest.x - entity.x);
-    let dy = Math.sign(nearest.y - entity.y);
-    if (dx !== 0 && walkable(entity.x + dx, entity.y) && !entityAt(entity.x + dx, entity.y)) {
-      entity.x += dx;
-    } else if (dy !== 0 && walkable(entity.x, entity.y + dy) && !entityAt(entity.x, entity.y + dy)) {
-      entity.y += dy;
-    }
+  // Chase if within 6 tiles
+  if (nearest && nearDist <= 6) {
+    entity.moveVX = Math.sign(nearest.x - entity.x);
+    entity.moveVY = Math.sign(nearest.y - entity.y);
     return;
   }
 
-  // Wander
-  let dirs = [[1,0],[-1,0],[0,1],[0,-1]];
-  let d = dirs[Math.floor(Math.random()*4)];
-  let nx = entity.x + d[0], ny = entity.y + d[1];
-  if (walkable(nx, ny) && !entityAt(nx, ny)) { entity.x = nx; entity.y = ny; }
+  // Wander randomly
+  if (Math.random() < 0.3) {
+    let dirs = [[1,0],[-1,0],[0,1],[0,-1],[1,1],[-1,-1],[1,-1],[-1,1]];
+    let d = dirs[Math.floor(Math.random()*dirs.length)];
+    entity.moveVX = d[0];
+    entity.moveVY = d[1];
+  }
 }
 
-function entityAt(x, y, exclude) {
-  return entities.find(e => e.alive && e.x === x && e.y === y && e !== exclude);
+function updateAIMovement(dt) {
+  for (let e of entities) {
+    if (e.isPlayer || !e.alive) continue;
+    // Apply smooth movement based on AI direction
+    if (e.moveVX !== 0 || e.moveVY !== 0) {
+      moveEntitySmooth(e, e.moveVX, e.moveVY, dt);
+    }
+  }
+}
+
+// --- Recruit Command ---
+function attemptRecruit() {
+  if (!player || !player.alive || recruitCooldown > 0) return;
+
+  // Find nearest alive non-ally enemy within 3 tiles
+  let candidates = entities.filter(e => e.alive && !e.isPlayer && !e.isAlly && distFloat(player, e) <= 3);
+  if (candidates.length === 0) {
+    addLog('No enemies nearby to recruit!', 'log-info');
+    return;
+  }
+  candidates.sort((a, b) => distFloat(player, a) - distFloat(player, b));
+  let target = candidates[0];
+
+  let playerRoll = player.stats.cmd + d6();
+  let enemyRoll = target.stats.int + d6();
+
+  recruitCooldown = 10; // 10 seconds cooldown
+
+  if (playerRoll > enemyRoll) {
+    // Success
+    target.isAlly = true;
+    target.color = '#7fffbf';
+    playRecruit();
+    addLog(target.name + ' has joined your cause! (CMD:' + playerRoll + ' vs INT:' + enemyRoll + ')', 'log-recruit');
+    spawnFloatingText(target.x, target.y, 'RECRUITED', '#7fffbf');
+  } else {
+    // Failure - enemy attacks player
+    addLog(target.name + ' resists your command! (CMD:' + playerRoll + ' vs INT:' + enemyRoll + ')', 'log-damage');
+    spawnFloatingText(target.x, target.y, 'RESISTED', '#ff4444');
+    performAttack(target, player);
+  }
 }
 
 // --- Floating Text ---
@@ -647,6 +876,20 @@ function drawTile(x, y) {
       topColor = '#808080'; leftColor = '#606060'; rightColor = '#505050'; depth = 20; break;
     case 'dungeon':
       topColor = '#303030'; leftColor = '#202020'; rightColor = '#181818'; depth = 6; break;
+    case 'sand':
+      topColor = '#d4b06a'; leftColor = '#b89050'; rightColor = '#9a7840'; break;
+    case 'lava': {
+      let wave = Math.sin(animTime * 4 + x * 0.8 + y * 0.6) * 0.2;
+      let r = Math.floor(220 + wave * 35), g = Math.floor(80 + wave * 40);
+      topColor = 'rgb('+r+','+g+',20)'; leftColor = '#8a2010'; rightColor = '#6a1808';
+      depth = 4; break;
+    }
+    case 'ice':
+      topColor = '#c8e8f8'; leftColor = '#a0c8e0'; rightColor = '#88b0d0'; break;
+    case 'swamp':
+      topColor = '#3a6030'; leftColor = '#2a4820'; rightColor = '#1e3818'; depth = 5; break;
+    case 'bridge':
+      topColor = '#a07840'; leftColor = '#806030'; rightColor = '#685028'; depth = 6; break;
     default:
       topColor = '#6dbf67'; leftColor = '#4e9948'; rightColor = '#3d7a39';
   }
@@ -671,6 +914,37 @@ function drawTile(x, y) {
   ctx.moveTo(sx, sy - hh); ctx.lineTo(sx + hw, sy); ctx.lineTo(sx, sy + hh); ctx.lineTo(sx - hw, sy);
   ctx.closePath(); ctx.fill();
 
+  // Lava glow
+  if (tile === 'lava') {
+    let glowIntensity = 0.15 + Math.sin(animTime * 5 + x + y) * 0.1;
+    let grad = ctx.createRadialGradient(sx, sy, 2, sx, sy, 30);
+    grad.addColorStop(0, 'rgba(255,100,20,' + glowIntensity + ')');
+    grad.addColorStop(1, 'rgba(255,60,10,0)');
+    ctx.fillStyle = grad;
+    ctx.fillRect(sx - 30, sy - 30, 60, 60);
+  }
+
+  // Ice sheen
+  if (tile === 'ice') {
+    let sheen = 0.08 + Math.sin(animTime * 1.5 + x * 2 + y) * 0.04;
+    ctx.fillStyle = 'rgba(255,255,255,' + sheen + ')';
+    ctx.beginPath();
+    ctx.moveTo(sx - 8, sy - 4); ctx.lineTo(sx + 4, sy - 8); ctx.lineTo(sx + 10, sy); ctx.lineTo(sx - 2, sy + 4);
+    ctx.closePath(); ctx.fill();
+  }
+
+  // Bridge planks
+  if (tile === 'bridge') {
+    ctx.strokeStyle = '#60482a';
+    ctx.lineWidth = 1;
+    for (let i = -2; i <= 2; i++) {
+      ctx.beginPath();
+      ctx.moveTo(sx - hw * 0.6 + i * 5, sy + i * 2.5 - 2);
+      ctx.lineTo(sx + hw * 0.6 + i * 5, sy + i * 2.5 + 2);
+      ctx.stroke();
+    }
+  }
+
   // Forest: tree
   if (tile === 'forest') {
     ctx.fillStyle = '#6b4226';
@@ -679,6 +953,51 @@ function drawTile(x, y) {
     ctx.beginPath(); ctx.arc(sx, sy - 24, 10, 0, Math.PI * 2); ctx.fill();
     ctx.fillStyle = '#3aaa3b';
     ctx.beginPath(); ctx.arc(sx - 2, sy - 27, 7, 0, Math.PI * 2); ctx.fill();
+
+    // Mushrooms on forest tiles (deterministic)
+    if (tileRand(x, y, 42) < 0.4) {
+      let mx = sx + (tileRand(x, y, 99) - 0.5) * 20;
+      let my = sy + (tileRand(x, y, 77) - 0.5) * 6 + 4;
+      ctx.fillStyle = '#c03030';
+      ctx.beginPath(); ctx.arc(mx, my - 3, 3, Math.PI, 0); ctx.fill();
+      ctx.fillStyle = '#e8d0a0';
+      ctx.fillRect(mx - 1, my - 3, 2, 4);
+      // White dots on mushroom cap
+      ctx.fillStyle = '#fff';
+      ctx.beginPath(); ctx.arc(mx - 1, my - 4, 0.8, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(mx + 1.5, my - 3.5, 0.8, 0, Math.PI * 2); ctx.fill();
+    }
+  }
+
+  // Grass decorations (flowers and rocks)
+  if (tile === 'grass') {
+    let r1 = tileRand(x, y, 1);
+    // Small flowers
+    if (r1 < 0.3) {
+      let flowerColors = ['#ff6688', '#ffcc44', '#aa66ff', '#66ccff', '#ff8844'];
+      let fc = flowerColors[Math.floor(tileRand(x, y, 2) * flowerColors.length)];
+      let fx = sx + (tileRand(x, y, 3) - 0.5) * 24;
+      let fy = sy + (tileRand(x, y, 4) - 0.5) * 8;
+      ctx.fillStyle = fc;
+      ctx.beginPath(); ctx.arc(fx, fy, 2, 0, Math.PI * 2); ctx.fill();
+      // Second flower sometimes
+      if (tileRand(x, y, 5) < 0.5) {
+        let fx2 = sx + (tileRand(x, y, 6) - 0.5) * 20;
+        let fy2 = sy + (tileRand(x, y, 7) - 0.5) * 6;
+        let fc2 = flowerColors[Math.floor(tileRand(x, y, 8) * flowerColors.length)];
+        ctx.fillStyle = fc2;
+        ctx.beginPath(); ctx.arc(fx2, fy2, 1.5, 0, Math.PI * 2); ctx.fill();
+      }
+    }
+    // Small rocks
+    if (r1 >= 0.3 && r1 < 0.45) {
+      let rx = sx + (tileRand(x, y, 10) - 0.5) * 22;
+      let ry = sy + (tileRand(x, y, 11) - 0.5) * 8;
+      ctx.fillStyle = '#888';
+      ctx.beginPath(); ctx.arc(rx, ry, 2.5, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#aaa';
+      ctx.beginPath(); ctx.arc(rx - 0.5, ry - 0.5, 1.5, 0, Math.PI * 2); ctx.fill();
+    }
   }
 
   // Wall: merlons
@@ -797,6 +1116,13 @@ function drawEntity(entity) {
       ctx.closePath(); ctx.fill();
     }
 
+    // Ally indicator
+    if (entity.isAlly) {
+      ctx.fillStyle = '#7fffbf';
+      ctx.font = 'bold 8px sans-serif';
+      ctx.fillText('ALLY', sx, barY - 10);
+    }
+
     // Ability active indicators
     if (entity.abilityActive.fortify) {
       ctx.strokeStyle = '#4080e0'; ctx.lineWidth = 2;
@@ -868,12 +1194,19 @@ function render(timestamp) {
   lastFrameTime = timestamp;
   animTime += dt;
 
-  // Canvas size is managed by the resize handler, not per-frame
+  // Smooth player movement (continuous)
+  updatePlayerMovement(dt);
 
-  // Smooth entity rendering positions
+  // AI movement updates
+  for (let e of entities) {
+    if (!e.isPlayer) aiTick(e, dt);
+  }
+  updateAIMovement(dt);
+
+  // Update render positions to track actual float position
   for (let e of entities) {
     if (e.renderX === undefined) { e.renderX = e.x; e.renderY = e.y; }
-    let lerpSpeed = Math.min(1, dt * 10);
+    let lerpSpeed = Math.min(1, dt * 15);
     e.renderX += (e.x - e.renderX) * lerpSpeed;
     e.renderY += (e.y - e.renderY) * lerpSpeed;
     if (!e.alive && e.deathAnim > 0) {
@@ -904,7 +1237,7 @@ function render(timestamp) {
       if (item.y === y) drawItem(item);
     }
 
-    // Entities on this row
+    // Entities on this row (use rounded renderY for sort)
     let rowEntities = entities.filter(e => Math.round(e.renderY !== undefined ? e.renderY : e.y) === y && (e.alive || e.deathAnim > 0));
     rowEntities.sort((a, b) => (a.renderX || a.x) - (b.renderX || b.x));
     for (let e of rowEntities) drawEntity(e);
@@ -943,6 +1276,11 @@ function drawMinimap() {
         case 'water': ctx.fillStyle = '#2a6aa0'; break;
         case 'wall': ctx.fillStyle = '#555'; break;
         case 'dungeon': ctx.fillStyle = '#442200'; break;
+        case 'sand': ctx.fillStyle = '#b89050'; break;
+        case 'lava': ctx.fillStyle = '#cc4010'; break;
+        case 'ice': ctx.fillStyle = '#a0d0e8'; break;
+        case 'swamp': ctx.fillStyle = '#2a4820'; break;
+        case 'bridge': ctx.fillStyle = '#8a6838'; break;
         default: ctx.fillStyle = '#333';
       }
       ctx.fillRect(mmX + x * scale, mmY + y * scale, Math.ceil(scale), Math.ceil(scale));
@@ -952,8 +1290,8 @@ function drawMinimap() {
   // Entities on minimap
   for (let e of entities) {
     if (!e.alive) continue;
-    ctx.fillStyle = e.isPlayer && e.id === playerId ? '#fff' : e.color;
-    ctx.fillRect(mmX + e.x * scale - 1, mmY + e.y * scale - 1, 3, 3);
+    ctx.fillStyle = e.isPlayer && e.id === playerId ? '#fff' : e.isAlly ? '#7fffbf' : e.color;
+    ctx.fillRect(mmX + Math.round(e.x) * scale - 1, mmY + Math.round(e.y) * scale - 1, 3, 3);
   }
 
   // Items
@@ -1002,6 +1340,11 @@ function updateUI() {
   btn.disabled = player.specialCooldown > 0 || !player.alive;
   document.getElementById('cooldown-text').textContent = player.specialCooldown > 0 ? 'CD: '+player.specialCooldown : 'Ready!';
 
+  // Recruit button
+  let recruitBtn = document.getElementById('btn-recruit');
+  recruitBtn.disabled = recruitCooldown > 0 || !player.alive;
+  document.getElementById('recruit-cooldown-text').textContent = recruitCooldown > 0 ? 'CD: '+Math.ceil(recruitCooldown)+'s' : '';
+
   // Goals
   let gc = document.getElementById('goals-container');
   gc.innerHTML = '';
@@ -1024,13 +1367,14 @@ function updateUI() {
   // Nearby
   let nearbyEl = document.getElementById('nearby-list');
   nearbyEl.innerHTML = '';
-  let nearby = entities.filter(e => e.alive && e.id !== playerId && dist(e, player) <= 8);
-  nearby.sort((a, b) => dist(a, player) - dist(b, player));
+  let nearby = entities.filter(e => e.alive && e.id !== playerId && distFloat(e, player) <= 8);
+  nearby.sort((a, b) => distFloat(a, player) - distFloat(b, player));
   for (let e of nearby.slice(0, 8)) {
-    let d2 = dist(e, player);
+    let d2 = distFloat(e, player).toFixed(1);
     let div = document.createElement('div');
     div.className = 'nearby-entity';
-    div.innerHTML = '<span style="color:'+e.color+'">'+e.name+'</span><span>'+e.cls+' HP:'+e.hp+' D:'+d2+'</span>';
+    let allyTag = e.isAlly ? ' [ALLY]' : '';
+    div.innerHTML = '<span style="color:'+e.color+'">'+e.name+allyTag+'</span><span>'+e.cls+' HP:'+e.hp+' D:'+d2+'</span>';
     nearbyEl.appendChild(div);
   }
 }
@@ -1039,68 +1383,36 @@ function updateUI() {
 function gameTick() {
   if (!player) return;
   gameTime += 0.5;
-  updateUI();
 
-  // Player movement
-  if (player.alive) {
-    moveCooldown -= 500;
-    if (moveCooldown <= 0) {
-      let dx = 0, dy = 0;
-      if (keysDown['ArrowUp'] || keysDown['KeyW']) dy = -1;
-      else if (keysDown['ArrowDown'] || keysDown['KeyS']) dy = 1;
-      if (keysDown['ArrowLeft'] || keysDown['KeyA']) dx = -1;
-      else if (keysDown['ArrowRight'] || keysDown['KeyD']) dx = 1;
-
-      if (dx !== 0 || dy !== 0) {
-        let nx = player.x + dx, ny = player.y + dy;
-        if (walkable(nx, ny)) {
-          let target = entityAt(nx, ny, player);
-          if (target && target.alive) {
-            performAttack(player, target);
-            moveCooldown = Math.max(200, 600 - player.stats.spd * 50);
-          } else if (!target) {
-            player.x = nx; player.y = ny;
-            playStep();
-            moveCooldown = Math.max(100, 400 - player.stats.spd * 40);
-
-            // Item pickup
-            for (let i = items.length - 1; i >= 0; i--) {
-              if (items[i].x === player.x && items[i].y === player.y) {
-                let item = items[i];
-                if (player.stats[item.stat] < 9) {
-                  player.stats[item.stat]++;
-                  if (item.stat === 'ene') { player.maxHp = 10 + player.stats.ene * 2; player.hp = Math.min(player.hp + 2, player.maxHp); }
-                  if (item.stat === 'int') player.specialMaxCooldown = Math.max(3, 10 - player.stats.int);
-                }
-                addLog('Picked up '+item.name+'! (+1 '+STAT_LABELS[item.stat]+')', 'log-item');
-                playPickup();
-                itemsCollected++;
-                inventoryLog.push({ name: item.name, color: item.color });
-                for (let g of goals) if (g.type === 'collect') g.progress++;
-                items.splice(i, 1);
-                break;
-              }
-            }
-
-            // Dungeon goal
-            if (tiles[player.y][player.x] === 'dungeon') {
-              for (let g of goals) if (g.type === 'dungeon') g.progress = 1;
-            }
-          }
-        }
+  // Healing timer: every 6 ticks (3 seconds), heal 1 HP
+  healTimer++;
+  if (healTimer >= 6) {
+    healTimer = 0;
+    // Heal player
+    if (player.alive && player.hp < player.maxHp) {
+      player.hp = Math.min(player.maxHp, player.hp + 1);
+      spawnFloatingText(player.x, player.y, '+1', '#44ff44');
+    }
+    // Heal AI entities
+    for (let e of entities) {
+      if (!e.isPlayer && e.alive && e.hp < e.maxHp) {
+        e.hp = Math.min(e.maxHp, e.hp + 1);
       }
     }
-
-    // Cooldown reduction
-    if (gameTime % 1 === 0 && player.specialCooldown > 0) player.specialCooldown--;
   }
 
-  // AI ticks
+  // Recruit cooldown
+  if (recruitCooldown > 0) {
+    recruitCooldown -= 0.5;
+    if (recruitCooldown < 0) recruitCooldown = 0;
+  }
+
+  // Cooldown reduction for player special
+  if (player.alive && gameTime % 1 === 0 && player.specialCooldown > 0) player.specialCooldown--;
+
+  // AI special cooldown
   for (let e of entities) {
-    if (!e.isPlayer) {
-      aiTick(e, 500);
-      if (e.alive && e.specialCooldown > 0 && Math.random() < 0.5) e.specialCooldown--;
-    }
+    if (!e.isPlayer && e.alive && e.specialCooldown > 0 && Math.random() < 0.5) e.specialCooldown--;
   }
 
   // Clean up dead AIs
@@ -1136,6 +1448,7 @@ function gameTick() {
   }
 
   updateGoals();
+  updateUI();
   broadcastState();
 }
 
@@ -1143,7 +1456,7 @@ function gameTick() {
 function worldUpdate() {
   let px = 3 + Math.floor(Math.random() * (MAP_SIZE - 6));
   let py = 3 + Math.floor(Math.random() * (MAP_SIZE - 6));
-  let tileTypes = ['grass', 'stone', 'forest'];
+  let tileTypes = ['grass', 'stone', 'forest', 'sand', 'swamp', 'ice'];
   let newType = tileTypes[Math.floor(Math.random() * tileTypes.length)];
   for (let dy = 0; dy < 3; dy++)
     for (let dx = 0; dx < 3; dx++)
@@ -1159,6 +1472,15 @@ function worldUpdate() {
       let x = wx + (horiz ? i : 0), y = wy + (horiz ? 0 : i);
       if (x < MAP_SIZE-1 && y < MAP_SIZE-1) tiles[y][x] = 'wall';
     }
+  }
+
+  // Occasionally spawn lava patches
+  if (Math.random() < 0.2) {
+    let lx = 3 + Math.floor(Math.random() * (MAP_SIZE - 6));
+    let ly = 3 + Math.floor(Math.random() * (MAP_SIZE - 6));
+    for (let dy = 0; dy < 2; dy++)
+      for (let dx = 0; dx < 2; dx++)
+        if (lx+dx < MAP_SIZE-1 && ly+dy < MAP_SIZE-1) tiles[ly+dy][lx+dx] = 'lava';
   }
 
   addLog('The world shifts...', 'log-world');
@@ -1244,7 +1566,8 @@ function broadcastState() {
       specialMaxCooldown: e.specialMaxCooldown,
       abilityActive: e.abilityActive, aiTimer: e.aiTimer,
       combatTimer: e.combatTimer, deathAnim: e.deathAnim,
-      rallyBonus: e.rallyBonus
+      rallyBonus: e.rallyBonus, isAlly: e.isAlly,
+      moveVX: e.moveVX, moveVY: e.moveVY
     }));
     if (Math.floor(gameTime * 2) % 10 === 0) {
       msg.tiles = tiles;
@@ -1271,7 +1594,8 @@ function createCharacter() {
 
   addLog(player.name+' the '+player.cls+' enters the arena!', 'log-info');
   addLog('Ability: '+ABILITIES[player.cls].name+' - '+ABILITIES[player.cls].desc, 'log-info');
-  addLog('WASD/Arrows to move. Space for special. Walk into enemies to attack.', 'log-info');
+  addLog('WASD/Arrows to move smoothly. Space for special. Walk into enemies to attack.', 'log-info');
+  addLog('Use the Recruit button to command nearby enemies!', 'log-info');
 
   if (isHost) {
     for (let i = 0; i < 8; i++) {
@@ -1282,6 +1606,8 @@ function createCharacter() {
 
   initGoals();
   isDead = false;
+  healTimer = 0;
+  recruitCooldown = 0;
 }
 
 // --- Death ---
@@ -1305,6 +1631,7 @@ function respawn() {
   entities.push(player);
   kills = 0; itemsCollected = 0; goalsCompleted = 0; gameTime = 0;
   score = 0; isDead = false; inventoryLog = [];
+  healTimer = 0; recruitCooldown = 0;
   initGoals();
   combatLogEntries = [];
   document.getElementById('combat-log').innerHTML = '';
@@ -1326,6 +1653,9 @@ document.addEventListener('keydown', (e) => {
     e.preventDefault();
     if (player && player.alive) useSpecial(player);
   }
+  if (e.code === 'KeyR' && e.ctrlKey === false && e.metaKey === false) {
+    if (player && player.alive) attemptRecruit();
+  }
   if (!audioUnlocked) initAudio();
 });
 
@@ -1333,6 +1663,10 @@ document.addEventListener('keyup', (e) => { delete keysDown[e.code]; });
 
 document.getElementById('btn-special').addEventListener('click', () => {
   if (player && player.alive) useSpecial(player);
+});
+
+document.getElementById('btn-recruit').addEventListener('click', () => {
+  if (player && player.alive) attemptRecruit();
 });
 
 document.getElementById('name-input').addEventListener('keydown', (e) => {
@@ -1343,19 +1677,16 @@ document.addEventListener('click', () => { if (!audioUnlocked) initAudio(); });
 
 // --- Init ---
 function resizeCanvas() {
-  // Use window size minus fixed bar heights (44px top + 48px bottom)
-  const w = window.innerWidth - 200 - 220; // minus left/right panels
-  const h = window.innerHeight - 44 - 48;  // minus top/bottom bars
+  const w = window.innerWidth - 200 - 220;
+  const h = window.innerHeight - 44 - 48;
   if (canvas.width !== w || canvas.height !== h) {
     canvas.width = w;
     canvas.height = h;
     canvas.style.width = w + 'px';
     canvas.style.height = h + 'px';
   }
-  // Always update stable center vars
   viewCX = canvas.width / 2;
   viewCY = canvas.height / 2;
-  // Snap camera after resize
   if (player) {
     const pp = isoProject(player.x, player.y);
     camera.x = pp.sx;
