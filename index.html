@@ -867,11 +867,7 @@ function render(timestamp) {
   lastFrameTime = timestamp;
   animTime += dt;
 
-  let container = document.getElementById('canvas-container');
-  if (canvas.width !== container.clientWidth || canvas.height !== container.clientHeight) {
-    canvas.width = container.clientWidth;
-    canvas.height = container.clientHeight;
-  }
+  // Canvas size is managed by the resize handler, not per-frame
 
   // Smooth entity rendering positions
   for (let e of entities) {
@@ -1345,9 +1341,27 @@ document.getElementById('name-input').addEventListener('keydown', (e) => {
 document.addEventListener('click', () => { if (!audioUnlocked) initAudio(); });
 
 // --- Init ---
+function resizeCanvas() {
+  const container = document.getElementById('canvas-container');
+  const w = container.clientWidth;
+  const h = container.clientHeight;
+  if (canvas.width !== w || canvas.height !== h) {
+    canvas.width = w;
+    canvas.height = h;
+    // Re-snap camera after resize so the player stays centered
+    if (player) {
+      const pp = isoProject(player.x, player.y);
+      camera.x = pp.sx;
+      camera.y = pp.sy;
+    }
+  }
+}
+
 function init() {
   canvas = document.getElementById('gameCanvas');
   ctx = canvas.getContext('2d');
+  resizeCanvas();
+  window.addEventListener('resize', resizeCanvas);
   generateMap();
   scatterItems(15);
   initMultiplayer();
