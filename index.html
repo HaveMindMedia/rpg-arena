@@ -58,6 +58,9 @@ body { background: #1a1a2e; color: #eee; font-family: 'Segoe UI', Tahoma, Geneva
 #btn-special { padding: 8px 24px; background: linear-gradient(180deg, #6a3aaa, #4a2a7a); border: 1px solid #8a5aca; color: #fff; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: bold; transition: all 0.2s; }
 #btn-special:hover { background: linear-gradient(180deg, #8a5aca, #6a3aaa); }
 #btn-special:disabled { opacity: 0.4; cursor: default; }
+#btn-ranged { padding: 8px 24px; background: linear-gradient(180deg, #8a6a2a, #6a4a1a); border: 1px solid #caaa4a; color: #fff; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: bold; transition: all 0.2s; }
+#btn-ranged:hover { background: linear-gradient(180deg, #aa8a3a, #8a6a2a); }
+#btn-ranged:disabled { opacity: 0.4; cursor: default; }
 #btn-recruit { padding: 8px 24px; background: linear-gradient(180deg, #2a8a4a, #1a6a3a); border: 1px solid #4aca6a; color: #fff; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: bold; transition: all 0.2s; }
 #btn-recruit:hover { background: linear-gradient(180deg, #3aaa5a, #2a8a4a); }
 #btn-recruit:disabled { opacity: 0.4; cursor: default; }
@@ -65,6 +68,7 @@ body { background: #1a1a2e; color: #eee; font-family: 'Segoe UI', Tahoma, Geneva
 #btn-wait:hover { background: #444; }
 #cooldown-text { font-size: 12px; color: #aaa; }
 #recruit-cooldown-text { font-size: 12px; color: #aaa; }
+#ranged-cooldown-text { font-size: 12px; color: #cca84a; }
 
 /* Creation overlay */
 #creation-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.85); display: flex; align-items: center; justify-content: center; z-index: 100; }
@@ -165,7 +169,9 @@ body { background: #1a1a2e; color: #eee; font-family: 'Segoe UI', Tahoma, Geneva
   <div id="bottom-bar">
     <button id="btn-special" disabled>Special Ability</button>
     <span id="cooldown-text"></span>
-    <button id="btn-recruit" disabled>Recruit</button>
+    <button id="btn-ranged" disabled>🏹 Ranged Attack</button>
+    <span id="ranged-cooldown-text"></span>
+    <button id="btn-recruit" disabled>📣 Recruit</button>
     <span id="recruit-cooldown-text"></span>
     <button id="btn-wait" onclick="playerWait()">WAIT</button>
   </div>
@@ -191,8 +197,9 @@ const ABILITIES = {
   Sage: { name:'Mind Link', desc:'+3 to counter-roll' },
   Commander: { name:'Rally', desc:'Nearby allies +2 to next roll' }
 };
-const ADJ = ['Fierce','Swift','Dark','Grim','Ancient','Wild'];
-const MONSTERS = ['Troll','Goblin','Orc','Shade','Wraith','Beast'];
+const ADJ = ['Fierce','Swift','Dark','Grim','Ancient','Wild','Cursed','Hollow','Blazing','Rotten','Iron','Shadow','Frost','Vile','Hungry','Broken','Cruel','Savage','Twisted','Sly'];
+const MONSTERS = ['Troll','Goblin','Orc','Shade','Wraith','Beast','Ogre','Revenant','Ghoul','Specter','Drake','Imp','Bandit','Golem','Serpent','Lich','Brute','Raider','Cultist','Demon'];
+const MOB_EMOJI = ['👹','👺','💀','🧟','🐉','👾','🦇','🕷️','🐺','🦂','🧛','☠️','🔥','💢','⚔️','🗡️','🩸','🌑','👁️','🤺'];
 const ITEM_DEFS = {
   atk: { names:['Iron Sword','Battle Axe','War Hammer'], color:'#e04040' },
   def: { names:['Shield','Chain Mail','Tower Shield'], color:'#4080e0' },
@@ -231,8 +238,11 @@ let worldUpdateTimer = 0;
 let isDead = false;
 let inventoryLog = [];
 let healTimer = 0; // healing counter: increments each gameTick, heals at 6
-let recruitCooldown = 0; // recruit cooldown in seconds
-let recruitCooldownTimer = 0; // ms counter for recruit cooldown
+let recruitCooldown = 0;
+let recruitCooldownTimer = 0;
+let rangedCooldown = 0;
+let rangedCooldownTimer = 0;
+let projectiles = []; // { x, y, dx, dy, speed, owner, damage, color, life }
 let playerAttackCooldown = 0; // cooldown for player melee attacks (seconds)
 
 // --- Seeded random for tile decorations ---
@@ -352,11 +362,23 @@ function isoProject(tx, ty) {
 function walkable(x, y) {
   if (x < 0 || y < 0 || x >= MAP_SIZE || y >= MAP_SIZE) return false;
   let t = tiles[y][x];
-  return t !== 'wall' && t !== 'water' && t !== 'lava';
+  return t !== 'wall'; // water/lava slow but don't block
+}
+
+function tileSpeedMult(x, y) {
+  if (x < 0 || y < 0 || x >= MAP_SIZE || y >= MAP_SIZE) return 1;
+  let t = tiles[Math.floor(y)][Math.floor(x)];
+  if (t === 'water') return 0.35;
+  if (t === 'lava')  return 0.25;
+  if (t === 'swamp') return 0.45;
+  if (t === 'sand')  return 0.75;
+  if (t === 'ice')   return 1.3; // slippery fast
+  return 1;
 }
 
 function randomName() {
-  return ADJ[Math.floor(Math.random()*ADJ.length)] + ' ' + MONSTERS[Math.floor(Math.random()*MONSTERS.length)];
+  let emoji = MOB_EMOJI[Math.floor(Math.random()*MOB_EMOJI.length)];
+  return emoji + ' ' + ADJ[Math.floor(Math.random()*ADJ.length)] + ' ' + MONSTERS[Math.floor(Math.random()*MONSTERS.length)];
 }
 
 // --- Sound ---
@@ -608,40 +630,33 @@ function getEntitySpeed(entity) {
 function moveEntitySmooth(entity, dx, dy, dt) {
   if (!entity.alive) return;
   let speed = getEntitySpeed(entity);
-  let moveAmount = speed * dt;
+  let terrainMult = tileSpeedMult(entity.x, entity.y);
+  let moveAmount = speed * terrainMult * dt;
 
   // Normalize diagonal movement
   if (dx !== 0 && dy !== 0) {
-    moveAmount *= 0.7071; // 1/sqrt(2)
+    moveAmount *= 0.7071;
   }
 
   let newX = entity.x + dx * moveAmount;
   let newY = entity.y + dy * moveAmount;
 
-  // Check collision at destination integer coords
-  let destTileX = Math.floor(dx > 0 ? Math.ceil(newX) : Math.floor(newX));
-  let destTileY = Math.floor(dy > 0 ? Math.ceil(newY) : Math.floor(newY));
-
-  // Check horizontal movement
+  // Check horizontal movement (walls only)
   let canMoveX = true;
   if (dx !== 0) {
-    let checkX = dx > 0 ? Math.floor(newX + 0.3) : Math.ceil(newX - 0.3);
+    let checkX = dx > 0 ? Math.floor(newX + 0.4) : Math.ceil(newX - 0.4);
     let checkY1 = Math.floor(entity.y);
-    let checkY2 = Math.ceil(entity.y);
-    if (!walkable(checkX, checkY1) || (checkY2 !== checkY1 && !walkable(checkX, checkY2))) {
-      canMoveX = false;
-    }
+    let checkY2 = Math.round(entity.y);
+    if (!walkable(checkX, checkY1) || !walkable(checkX, checkY2)) canMoveX = false;
   }
 
-  // Check vertical movement
+  // Check vertical movement (walls only)
   let canMoveY = true;
   if (dy !== 0) {
-    let checkY = dy > 0 ? Math.floor(newY + 0.3) : Math.ceil(newY - 0.3);
+    let checkY = dy > 0 ? Math.floor(newY + 0.4) : Math.ceil(newY - 0.4);
     let checkX1 = Math.floor(entity.x);
-    let checkX2 = Math.ceil(entity.x);
-    if (!walkable(checkX1, checkY) || (checkX2 !== checkX1 && !walkable(checkX2, checkY))) {
-      canMoveY = false;
-    }
+    let checkX2 = Math.round(entity.x);
+    if (!walkable(checkX1, checkY) || !walkable(checkX2, checkY)) canMoveY = false;
   }
 
   if (canMoveX) entity.x = Math.max(0.5, Math.min(MAP_SIZE - 1.5, entity.x + dx * moveAmount));
@@ -825,6 +840,107 @@ function attemptRecruit() {
     addLog(target.name + ' resists your command! (CMD:' + playerRoll + ' vs INT:' + enemyRoll + ')', 'log-damage');
     spawnFloatingText(target.x, target.y, 'RESISTED', '#ff4444');
     performAttack(target, player);
+  }
+}
+
+// --- Ranged Attack ---
+// Range = Command stat (1-6 tiles). Damage = ATK + d6 vs target DEF + d6.
+function attemptRangedAttack() {
+  if (!player || !player.alive || rangedCooldown > 0) return;
+
+  let range = player.stats.cmd; // Command = range in tiles
+  // Find nearest alive non-ally enemy within range
+  let candidates = entities.filter(e => e.alive && !e.isPlayer && !e.isAlly && distFloat(player, e) <= range);
+  if (candidates.length === 0) {
+    addLog('No targets within range ' + range + ' tiles! (CMD ' + player.stats.cmd + ')', 'log-info');
+    return;
+  }
+  candidates.sort((a, b) => distFloat(player, a) - distFloat(player, b));
+  let target = candidates[0];
+
+  let atkRoll = player.stats.atk + d6();
+  let defRoll = target.stats.def + d6();
+
+  // Fire a visual projectile
+  let dx = target.x - player.x;
+  let dy = target.y - player.y;
+  let len = Math.sqrt(dx*dx + dy*dy) || 1;
+  projectiles.push({
+    x: player.x, y: player.y,
+    dx: dx/len, dy: dy/len,
+    speed: 14, // tiles/sec
+    targetId: target.id,
+    damage: atkRoll > defRoll ? (atkRoll - defRoll + 1) : 0,
+    atkRoll, defRoll,
+    color: '#ffdd44',
+    life: 1.0,
+    hit: false,
+    target
+  });
+
+  playAttack();
+  rangedCooldown = Math.max(1, 8 - player.stats.cmd); // faster cooldown with higher CMD
+  addLog('🏹 Ranged shot at ' + target.name + '! ATK:' + atkRoll + ' vs DEF:' + defRoll, 'log-damage');
+}
+
+function updateProjectiles(dt) {
+  for (let i = projectiles.length - 1; i >= 0; i--) {
+    let p = projectiles[i];
+    p.x += p.dx * p.speed * dt;
+    p.y += p.dy * p.speed * dt;
+    p.life -= dt * 1.5;
+
+    // Check if reached target
+    if (!p.hit && p.target && p.target.alive) {
+      let dx = p.x - p.target.x, dy = p.y - p.target.y;
+      if (dx*dx + dy*dy < 0.3) {
+        p.hit = true;
+        if (p.damage > 0) {
+          p.target.hp -= p.damage;
+          spawnFloatingText(p.target.x, p.target.y, '-' + p.damage, '#ffdd44');
+          playHit();
+          if (p.target.hp <= 0) {
+            p.target.alive = false;
+            p.target.deathAnim = 1.0;
+            kills++;
+            addLog('🏹 ' + p.target.name + ' slain by ranged attack!', 'log-kill');
+            playDeath();
+            checkGoals();
+          }
+        } else {
+          spawnFloatingText(p.target.x, p.target.y, 'MISS', '#888');
+        }
+        p.life = 0;
+      }
+    }
+
+    if (p.life <= 0) projectiles.splice(i, 1);
+  }
+}
+
+function drawProjectiles() {
+  for (let p of projectiles) {
+    let pp = isoProject(p.x, p.y);
+    let sx = pp.sx - camera.x + viewCX;
+    let sy = pp.sy - camera.y + viewCY;
+    ctx.save();
+    ctx.globalAlpha = Math.min(1, p.life * 2);
+    // Arrow shape
+    ctx.fillStyle = p.color;
+    ctx.shadowColor = p.color;
+    ctx.shadowBlur = 8;
+    ctx.beginPath();
+    ctx.arc(sx, sy - 20, 4, 0, Math.PI * 2);
+    ctx.fill();
+    // Trail
+    ctx.strokeStyle = p.color;
+    ctx.lineWidth = 2;
+    ctx.globalAlpha *= 0.5;
+    ctx.beginPath();
+    ctx.moveTo(sx, sy - 20);
+    ctx.lineTo(sx - p.dx * 20, sy - 20 - p.dy * 10);
+    ctx.stroke();
+    ctx.restore();
   }
 }
 
@@ -1248,6 +1364,8 @@ function render(timestamp) {
     }
   }
 
+  updateProjectiles(dt);
+  drawProjectiles();
   drawFloatingTexts(dt);
 
   // Minimap
@@ -1344,6 +1462,9 @@ function updateUI() {
   let recruitBtn = document.getElementById('btn-recruit');
   recruitBtn.disabled = recruitCooldown > 0 || !player.alive;
   document.getElementById('recruit-cooldown-text').textContent = recruitCooldown > 0 ? 'CD: '+Math.ceil(recruitCooldown)+'s' : '';
+  let rangedBtn = document.getElementById('btn-ranged');
+  rangedBtn.disabled = rangedCooldown > 0 || !player.alive;
+  document.getElementById('ranged-cooldown-text').textContent = rangedCooldown > 0 ? 'CD: '+Math.ceil(rangedCooldown)+'s' : '(Range: '+player.stats.cmd+' tiles)';
 
   // Goals
   let gc = document.getElementById('goals-container');
@@ -1402,10 +1523,9 @@ function gameTick() {
   }
 
   // Recruit cooldown
-  if (recruitCooldown > 0) {
-    recruitCooldown -= 0.5;
-    if (recruitCooldown < 0) recruitCooldown = 0;
-  }
+  if (recruitCooldown > 0) { recruitCooldown -= 0.5; if (recruitCooldown < 0) recruitCooldown = 0; }
+  // Ranged cooldown
+  if (rangedCooldown > 0) { rangedCooldown -= 0.5; if (rangedCooldown < 0) rangedCooldown = 0; }
 
   // Cooldown reduction for player special
   if (player.alive && gameTime % 1 === 0 && player.specialCooldown > 0) player.specialCooldown--;
@@ -1432,11 +1552,7 @@ function gameTick() {
       }
     }
 
-    worldUpdateTimer += 500;
-    if (worldUpdateTimer >= 60000) {
-      worldUpdateTimer = 0;
-      worldUpdate();
-    }
+    // World updates disabled per design choice
   }
 
   // Clean stale remote players (no update for 5s)
@@ -1594,7 +1710,7 @@ function createCharacter() {
 
   addLog(player.name+' the '+player.cls+' enters the arena!', 'log-info');
   addLog('Ability: '+ABILITIES[player.cls].name+' - '+ABILITIES[player.cls].desc, 'log-info');
-  addLog('WASD/Arrows to move smoothly. Space for special. Walk into enemies to attack.', 'log-info');
+  addLog('WASD/Arrows: move | Space: special | F: ranged attack | R: recruit | Walk into enemy: melee', 'log-info');
   addLog('Use the Recruit button to command nearby enemies!', 'log-info');
 
   if (isHost) {
@@ -1656,6 +1772,9 @@ document.addEventListener('keydown', (e) => {
   if (e.code === 'KeyR' && e.ctrlKey === false && e.metaKey === false) {
     if (player && player.alive) attemptRecruit();
   }
+  if (e.code === 'KeyF') {
+    if (player && player.alive) attemptRangedAttack();
+  }
   if (!audioUnlocked) initAudio();
 });
 
@@ -1667,6 +1786,10 @@ document.getElementById('btn-special').addEventListener('click', () => {
 
 document.getElementById('btn-recruit').addEventListener('click', () => {
   if (player && player.alive) attemptRecruit();
+});
+
+document.getElementById('btn-ranged').addEventListener('click', () => {
+  if (player && player.alive) attemptRangedAttack();
 });
 
 document.getElementById('name-input').addEventListener('keydown', (e) => {
