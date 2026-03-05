@@ -184,7 +184,7 @@ body { background: #1a1a2e; color: #eee; font-family: 'Segoe UI', Tahoma, Geneva
 
 // --- Constants ---
 const TILE_W = 64, TILE_H = 32;
-const MAP_SIZE = 32;
+const MAP_SIZE = 60;
 const CLASS_COLORS = { Warrior:'#e04040', Guardian:'#4080e0', Scout:'#e0c040', Mage:'#a040e0', Sage:'#40d0d0', Commander:'#e08020' };
 const CLASS_LIST = ['Warrior','Guardian','Scout','Mage','Sage','Commander'];
 const STAT_NAMES = ['atk','def','spd','ene','int','cmd'];
@@ -197,6 +197,16 @@ const ABILITIES = {
   Sage: { name:'Mind Link', desc:'+3 to counter-roll' },
   Commander: { name:'Rally', desc:'Nearby allies +2 to next roll' }
 };
+
+// --- Team Definitions ---
+const TEAMS = [
+  { id:0, name:'CHAOS', color:'#ff4444', banner:'🔴', monsters:['💀 Bone Wraith','☠️ Death Knight','🩸 Blood Imp','👿 Demon Lord','🔥 Hellspawn','💢 Rage Beast','🌑 Void Shade'] },
+  { id:1, name:'NATURE', color:'#44ff88', banner:'🟢', monsters:['🐺 Wolf Pack','🌿 Forest Troll','🦇 Cave Bat','🌲 Treant','🍄 Spore Beast','🐉 Forest Drake','🦎 Lizardman'] },
+  { id:2, name:'ARCANE', color:'#aa44ff', banner:'🟣', monsters:['👾 Arcane Wisp','🧛 Vampire','🔮 Crystal Golem','⚡ Storm Elemental','🌀 Chaos Mage','💫 Star Specter','🧿 Mind Flayer'] },
+  { id:3, name:'IRON', color:'#ffaa44', banner:'🟠', monsters:['⚔️ Iron Guard','🛡️ Shield Brute','🗡️ Blade Dancer','🏹 Arrow Captain','⚙️ War Machine','🔩 Iron Golem','🪖 War Chief'] }
+];
+let teamKills = [0,0,0,0];
+
 const ADJ = ['Fierce','Swift','Dark','Grim','Ancient','Wild','Cursed','Hollow','Blazing','Rotten','Iron','Shadow','Frost','Vile','Hungry','Broken','Cruel','Savage','Twisted','Sly'];
 const MONSTERS = ['Troll','Goblin','Orc','Shade','Wraith','Beast','Ogre','Revenant','Ghoul','Specter','Drake','Imp','Bandit','Golem','Serpent','Lich','Brute','Raider','Cultist','Demon'];
 const MOB_EMOJI = ['👹','👺','💀','🧟','🐉','👾','🦇','🕷️','🐺','🦂','🧛','☠️','🔥','💢','⚔️','🗡️','🩸','🌑','👁️','🤺'];
@@ -238,11 +248,15 @@ let worldUpdateTimer = 0;
 let isDead = false;
 let inventoryLog = [];
 let healTimer = 0; // healing counter: increments each gameTick, heals at 6
+let playerTeam = 0;
 let recruitCooldown = 0;
 let recruitCooldownTimer = 0;
 let rangedCooldown = 0;
 let rangedCooldownTimer = 0;
-let projectiles = []; // { x, y, dx, dy, speed, owner, damage, color, life }
+let projectiles = [];
+let castles = [];
+let gameEvents = [];
+let itemScatterTimer = 0;
 let playerAttackCooldown = 0; // cooldown for player melee attacks (seconds)
 
 // --- Seeded random for tile decorations ---
@@ -262,21 +276,19 @@ function generateMap() {
       let r = Math.random();
       if (x === 0 || y === 0 || x === MAP_SIZE-1 || y === MAP_SIZE-1) {
         tiles[y][x] = 'wall';
-      } else if (r < 0.42) {
+      } else if (r < 0.45) {
         tiles[y][x] = 'grass';
-      } else if (r < 0.56) {
+      } else if (r < 0.58) {
         tiles[y][x] = 'forest';
       } else if (r < 0.65) {
         tiles[y][x] = 'stone';
-      } else if (r < 0.73) {
-        tiles[y][x] = 'water';
-      } else if (r < 0.78) {
+      } else if (r < 0.70) {
         tiles[y][x] = 'sand';
-      } else if (r < 0.82) {
+      } else if (r < 0.74) {
         tiles[y][x] = 'swamp';
-      } else if (r < 0.85) {
+      } else if (r < 0.77) {
         tiles[y][x] = 'ice';
-      } else if (r < 0.87) {
+      } else if (r < 0.79) {
         tiles[y][x] = 'lava';
       } else {
         tiles[y][x] = 'grass';
@@ -284,56 +296,120 @@ function generateMap() {
     }
   }
 
-  // Add bridges over water: scan for water tiles and occasionally place bridge
+  // --- RIVERS: 2-3 winding rivers from edge to edge ---
+  let numRivers = 2 + Math.floor(Math.random()*2);
+  for (let ri = 0; ri < numRivers; ri++) {
+    let horizontal = Math.random() < 0.5;
+    let rx, ry;
+    if (horizontal) { rx = 1; ry = 5 + Math.floor(Math.random()*(MAP_SIZE-10)); }
+    else { rx = 5 + Math.floor(Math.random()*(MAP_SIZE-10)); ry = 1; }
+    let steps = 0;
+    while (rx > 0 && rx < MAP_SIZE-1 && ry > 0 && ry < MAP_SIZE-1 && steps < MAP_SIZE*2) {
+      // Make river 2-3 wide
+      let width = 2 + (tileRand(rx, ry, ri+50) < 0.4 ? 1 : 0);
+      for (let w = 0; w < width; w++) {
+        let wx = horizontal ? rx : rx + w;
+        let wy = horizontal ? ry + w : ry;
+        if (wx > 0 && wx < MAP_SIZE-1 && wy > 0 && wy < MAP_SIZE-1) tiles[wy][wx] = 'water';
+      }
+      if (horizontal) { rx++; ry += Math.random() < 0.3 ? (Math.random()<0.5?1:-1) : 0; }
+      else { ry++; rx += Math.random() < 0.3 ? (Math.random()<0.5?1:-1) : 0; }
+      ry = Math.max(1, Math.min(MAP_SIZE-2, ry));
+      rx = Math.max(1, Math.min(MAP_SIZE-2, rx));
+      steps++;
+    }
+  }
+
+  // --- ROADS: 2-3 winding roads connecting areas ---
+  let numRoads = 2 + Math.floor(Math.random()*2);
+  for (let ri = 0; ri < numRoads; ri++) {
+    let horizontal = Math.random() < 0.5;
+    let rx, ry;
+    if (horizontal) { rx = 1; ry = 8 + Math.floor(Math.random()*(MAP_SIZE-16)); }
+    else { rx = 8 + Math.floor(Math.random()*(MAP_SIZE-16)); ry = 1; }
+    let steps = 0;
+    while (rx > 0 && rx < MAP_SIZE-1 && ry > 0 && ry < MAP_SIZE-1 && steps < MAP_SIZE*2) {
+      if (tiles[ry][rx] !== 'water') tiles[ry][rx] = 'road';
+      if (horizontal) { rx++; ry += Math.random() < 0.2 ? (Math.random()<0.5?1:-1) : 0; }
+      else { ry++; rx += Math.random() < 0.2 ? (Math.random()<0.5?1:-1) : 0; }
+      ry = Math.max(1, Math.min(MAP_SIZE-2, ry));
+      rx = Math.max(1, Math.min(MAP_SIZE-2, rx));
+      steps++;
+    }
+  }
+
+  // --- BRIDGES over rivers where roads cross ---
   for (let y = 2; y < MAP_SIZE-2; y++) {
     for (let x = 2; x < MAP_SIZE-2; x++) {
       if (tiles[y][x] === 'water') {
-        // horizontal bridge
-        if (x > 1 && x < MAP_SIZE-2 && tiles[y][x-1] !== 'water' && tiles[y][x+1] === 'water' && tiles[y][x+2] !== 'water' && Math.random() < 0.15) {
-          tiles[y][x] = 'bridge';
-          tiles[y][x+1] = 'bridge';
-        }
-        // vertical bridge
-        if (y > 1 && y < MAP_SIZE-2 && tiles[y-1][x] !== 'water' && tiles[y+1][x] === 'water' && tiles[y+2][x] !== 'water' && Math.random() < 0.15) {
-          tiles[y][x] = 'bridge';
-          tiles[y+1][x] = 'bridge';
-        }
+        // Check if road is nearby on both sides
+        let hasLandH = (x>1 && tiles[y][x-1]!=='water' && x<MAP_SIZE-2 && tiles[y][x+1]==='water');
+        if (hasLandH && Math.random() < 0.08) { tiles[y][x] = 'bridge'; if(x+1<MAP_SIZE-1 && tiles[y][x+1]==='water') tiles[y][x+1]='bridge'; }
+        let hasLandV = (y>1 && tiles[y-1][x]!=='water' && y<MAP_SIZE-2 && tiles[y+1][x]==='water');
+        if (hasLandV && Math.random() < 0.08) { tiles[y][x] = 'bridge'; if(y+1<MAP_SIZE-1 && tiles[y+1][x]==='water') tiles[y+1][x]='bridge'; }
       }
     }
   }
 
-  // Sand clusters: expand existing sand tiles
+  // Sand clusters
   for (let y = 2; y < MAP_SIZE-2; y++) {
     for (let x = 2; x < MAP_SIZE-2; x++) {
       if (tiles[y][x] === 'sand' && Math.random() < 0.4) {
         for (let dy = -1; dy <= 1; dy++) {
           for (let dx = -1; dx <= 1; dx++) {
             let nx = x+dx, ny = y+dy;
-            if (nx > 0 && nx < MAP_SIZE-1 && ny > 0 && ny < MAP_SIZE-1 && tiles[ny][nx] === 'grass') {
-              tiles[ny][nx] = 'sand';
-            }
+            if (nx > 0 && nx < MAP_SIZE-1 && ny > 0 && ny < MAP_SIZE-1 && tiles[ny][nx] === 'grass') tiles[ny][nx] = 'sand';
           }
         }
       }
     }
   }
 
-  // Dungeon room
-  let dx = 12 + Math.floor(Math.random()*8);
-  let dy = 12 + Math.floor(Math.random()*8);
-  for (let yy = dy; yy < dy+4 && yy < MAP_SIZE-1; yy++)
-    for (let xx = dx; xx < dx+4 && xx < MAP_SIZE-1; xx++)
-      tiles[yy][xx] = 'dungeon';
-  // Stone paths
-  for (let i = 0; i < 3; i++) {
-    let sx = 3 + Math.floor(Math.random()*26);
-    let sy = 3 + Math.floor(Math.random()*26);
-    let dir = Math.random() < 0.5 ? 0 : 1;
-    for (let j = 0; j < 8; j++) {
-      let px = sx + (dir === 0 ? j : 0);
-      let py = sy + (dir === 1 ? j : 0);
-      if (px > 0 && px < MAP_SIZE-1 && py > 0 && py < MAP_SIZE-1) tiles[py][px] = 'stone';
+  // --- FORTRESS WALLS: 3-4 wall segments with corner towers ---
+  let numForts = 3 + Math.floor(Math.random()*2);
+  for (let fi = 0; fi < numForts; fi++) {
+    let fx = 5 + Math.floor(Math.random()*(MAP_SIZE-20));
+    let fy = 5 + Math.floor(Math.random()*(MAP_SIZE-20));
+    let len = 8 + Math.floor(Math.random()*8);
+    let horiz = Math.random() < 0.5;
+    for (let i = 0; i < len; i++) {
+      let wx = fx + (horiz ? i : 0), wy = fy + (horiz ? 0 : i);
+      if (wx>0 && wx<MAP_SIZE-1 && wy>0 && wy<MAP_SIZE-1) tiles[wy][wx] = 'wall';
     }
+    // Corner towers (2x2 blocks)
+    for (let ty = 0; ty < 2; ty++) for (let tx = 0; tx < 2; tx++) {
+      let t1x = fx+tx, t1y = fy+ty;
+      let t2x = fx+(horiz?len-1:0)+tx, t2y = fy+(horiz?0:len-1)+ty;
+      if (t1x>0&&t1x<MAP_SIZE-1&&t1y>0&&t1y<MAP_SIZE-1) tiles[t1y][t1x] = 'tower';
+      if (t2x>0&&t2x<MAP_SIZE-1&&t2y>0&&t2y<MAP_SIZE-1) tiles[t2y][t2x] = 'tower';
+    }
+  }
+
+  // --- DUNGEON COMPLEXES: 2-3 rectangular rooms ---
+  let numDungeons = 2 + Math.floor(Math.random()*2);
+  for (let di = 0; di < numDungeons; di++) {
+    let dw = 8 + Math.floor(Math.random()*5);
+    let dh = 8 + Math.floor(Math.random()*5);
+    let dx = 4 + Math.floor(Math.random()*(MAP_SIZE-dw-8));
+    let dy = 4 + Math.floor(Math.random()*(MAP_SIZE-dh-8));
+    // Walls
+    for (let yy = dy; yy < dy+dh && yy < MAP_SIZE-1; yy++) {
+      for (let xx = dx; xx < dx+dw && xx < MAP_SIZE-1; xx++) {
+        if (yy===dy||yy===dy+dh-1||xx===dx||xx===dx+dw-1) tiles[yy][xx] = 'wall';
+        else tiles[yy][xx] = 'dungeon';
+      }
+    }
+    // Entrance
+    let entranceX = dx + Math.floor(dw/2);
+    if (entranceX < MAP_SIZE-1) tiles[dy+dh-1][entranceX] = 'dungeon';
+  }
+
+  // --- STANDALONE TOWERS ---
+  let numTowers = 4 + Math.floor(Math.random()*4);
+  for (let ti = 0; ti < numTowers; ti++) {
+    let tx = 3 + Math.floor(Math.random()*(MAP_SIZE-6));
+    let ty = 3 + Math.floor(Math.random()*(MAP_SIZE-6));
+    if (tiles[ty][tx] === 'grass' || tiles[ty][tx] === 'stone') tiles[ty][tx] = 'tower';
   }
 }
 
@@ -373,10 +449,15 @@ function tileSpeedMult(x, y) {
   if (t === 'swamp') return 0.45;
   if (t === 'sand')  return 0.75;
   if (t === 'ice')   return 1.3; // slippery fast
+  if (t === 'road')  return 1.5;
   return 1;
 }
 
-function randomName() {
+function randomName(teamId) {
+  if (teamId !== undefined) {
+    let pool = TEAMS[teamId].monsters;
+    return pool[Math.floor(Math.random()*pool.length)];
+  }
   let emoji = MOB_EMOJI[Math.floor(Math.random()*MOB_EMOJI.length)];
   return emoji + ' ' + ADJ[Math.floor(Math.random()*ADJ.length)] + ' ' + MONSTERS[Math.floor(Math.random()*MONSTERS.length)];
 }
@@ -418,10 +499,33 @@ function playNoise(dur, vol) {
   } catch(e) {}
 }
 
-function playAttack() { playSound(220, 'sawtooth', 0.1, 110, 0.12); }
+// Attack sound variants per class
+const ATTACK_SOUNDS = [
+  () => playSound(220, 'sawtooth', 0.1, 110, 0.12),  // heavy
+  () => playSound(330, 'square', 0.08, 165, 0.10),    // medium
+  () => playSound(500, 'triangle', 0.06, 250, 0.08),  // quick
+  () => { playSound(180, 'sawtooth', 0.12, 90, 0.10); playNoise(0.05, 0.06); }, // brutal
+  () => playSound(600, 'sine', 0.1, 300, 0.09),       // arcane
+  () => { playSound(150, 'square', 0.1, 75, 0.11); playSound(300, 'sine', 0.05, 150, 0.06); } // combo
+];
+const DEATH_SOUNDS = [
+  () => playSound(440, 'sawtooth', 0.5, 110, 0.15),
+  () => { playSound(300, 'square', 0.4, 80, 0.12); playNoise(0.3, 0.08); },
+  () => playSound(500, 'sawtooth', 0.6, 60, 0.13),
+  () => { playSound(200, 'triangle', 0.5, 50, 0.14); playSound(150, 'sawtooth', 0.3, 40, 0.08); }
+];
+function getAttackSoundIndex(entity) {
+  if (!entity) return 0;
+  if (entity.cls === 'Warrior' || entity.cls === 'Guardian') return Math.random()<0.5?0:3; // heavy
+  if (entity.cls === 'Mage' || entity.cls === 'Sage') return Math.random()<0.5?4:5; // arcane
+  if (entity.cls === 'Scout') return 2; // quick
+  return Math.floor(Math.random()*ATTACK_SOUNDS.length);
+}
+function playAttack(entity) { ATTACK_SOUNDS[getAttackSoundIndex(entity)](); }
 function playHit() { playNoise(0.15, 0.12); playSound(110, 'square', 0.1, 55, 0.08); }
 function playPickup() { playSound(440, 'sine', 0.2, 880, 0.1); }
-function playDeath() { playSound(440, 'sawtooth', 0.5, 110, 0.15); }
+function playDeath() { DEATH_SOUNDS[Math.floor(Math.random()*DEATH_SOUNDS.length)](); }
+function playDeathVariant() { playDeath(); }
 function playSpawn() { playSound(200, 'sine', 0.2, 600, 0.08); }
 function playGoalComplete() {
   [261.6, 329.6, 392, 523.2].forEach((f, i) => {
@@ -433,12 +537,13 @@ function playSpecial() { playSound(330, 'triangle', 0.3, 660, 0.15); }
 function playRecruit() { playSound(392, 'sine', 0.25, 523, 0.12); }
 
 // --- Entity Factory ---
-function createEntity(name, isPlayer, id) {
+function createEntity(name, isPlayer, id, teamId) {
   let stats = shuffleStats();
   let cls = getClass(stats);
   let maxHp = 10 + stats.ene * 2;
   let sx, sy;
   do { sx = 2 + Math.floor(Math.random()*(MAP_SIZE-4)); sy = 2 + Math.floor(Math.random()*(MAP_SIZE-4)); } while (!walkable(sx, sy));
+  let team = teamId !== undefined ? teamId : Math.floor(Math.random()*4);
   return {
     id: id || crypto.randomUUID(),
     name, isPlayer, stats, cls,
@@ -456,10 +561,34 @@ function createEntity(name, isPlayer, id) {
     rallyBonus: 0,
     lastAttacker: null,
     isAlly: false,
+    team: team,
     // Smooth movement
-    moveVX: 0, moveVY: 0, // current movement direction (-1, 0, 1)
-    stepSoundTimer: 0
+    moveVX: 0, moveVY: 0,
+    stepSoundTimer: 0,
+    // Unstuck tracking
+    stuckTimer: 0,
+    lastX: sx, lastY: sy,
+    // Inventory (items carried, dropped on death)
+    inventory: [],
+    // Flying
+    flying: false,
+    flyPhase: Math.random() * Math.PI * 2,
+    // Combat tracking
+    lastAttackMs: 0,
+    combatStaleTimer: 0
   };
+}
+
+function dropInventory(entity) {
+  if (!entity.inventory || entity.inventory.length === 0) return;
+  for (let item of entity.inventory) {
+    item.x = entity.x + (Math.random()-0.5)*2;
+    item.y = entity.y + (Math.random()-0.5)*2;
+    item.x = Math.max(2, Math.min(MAP_SIZE-3, item.x));
+    item.y = Math.max(2, Math.min(MAP_SIZE-3, item.y));
+    items.push(item);
+  }
+  entity.inventory = [];
 }
 
 // --- Items ---
@@ -474,6 +603,37 @@ function spawnItem(x, y) {
 }
 
 function scatterItems(n) { for (let i = 0; i < n; i++) spawnItem(); }
+
+function spawnFoodItems(n) {
+  const FOOD = ['🍎 Apple','🍖 Meat','🍞 Bread','🧀 Cheese','🍇 Grapes'];
+  for (let i = 0; i < n; i++) {
+    // Find a forest-adjacent tile
+    let fx, fy, tries = 0;
+    do {
+      fx = 2 + Math.floor(Math.random()*(MAP_SIZE-4));
+      fy = 2 + Math.floor(Math.random()*(MAP_SIZE-4));
+      tries++;
+    } while (tries < 30 && !(tiles[fy][fx]==='forest' || (tiles[fy][fx]==='grass' && [[-1,0],[1,0],[0,-1],[0,1]].some(([dx,dy])=>tiles[fy+dy]&&tiles[fy+dy][fx+dx]==='forest'))));
+    let name = FOOD[Math.floor(Math.random()*FOOD.length)];
+    items.push({ x: fx, y: fy, stat: null, name, color:'#ff9966', isFood: true, bobOffset: Math.random()*Math.PI*2 });
+  }
+}
+
+function generateCastles() {
+  castles = [];
+  const positions = [
+    {x:8,y:8},{x:MAP_SIZE-9,y:8},{x:8,y:MAP_SIZE-9},{x:MAP_SIZE-9,y:MAP_SIZE-9},
+    {x:Math.floor(MAP_SIZE/2),y:Math.floor(MAP_SIZE/2)}
+  ];
+  for (let pos of positions) {
+    // Stamp a 3x3 wall ring with open center
+    for (let dy=-1;dy<=1;dy++) for (let dx=-1;dx<=1;dx++) {
+      if (Math.abs(dx)===1||Math.abs(dy)===1) tiles[pos.y+dy][pos.x+dx]='wall';
+    }
+    tiles[pos.y][pos.x] = 'dungeon'; // Castle center
+    castles.push({x:pos.x,y:pos.y,team:-1,captureProgress:0,captureTeam:-1,spawnTimer:0});
+  }
+}
 
 // --- Goals ---
 function generateGoal() {
@@ -512,6 +672,15 @@ function updateGoals() {
 // --- Combat ---
 function performAttack(attacker, defender) {
   if (!attacker.alive || !defender.alive) return;
+  // Ally protection: same team never fights each other
+  if (attacker.team !== undefined && defender.team !== undefined && attacker.team === defender.team) return;
+  // Player & recruited allies never fight each other
+  if ((attacker.isAlly && defender.isPlayer) || (attacker.isPlayer && defender.isAlly)) return;
+  // Attack cooldown to prevent stalemates
+  let now = Date.now();
+  if (!attacker.lastAttackMs) attacker.lastAttackMs = 0;
+  if (now - attacker.lastAttackMs < 1200) return;
+  attacker.lastAttackMs = now;
 
   let atkStat = attacker.stats.atk;
   let defStat = defender.stats.def;
@@ -544,7 +713,7 @@ function performAttack(attacker, defender) {
 
   if (doubleDmg && hit) damage *= 2;
 
-  playAttack();
+  playAttack(attacker);
   if (hit && damage > 0) {
     defender.hp -= damage;
     defender.lastAttacker = attacker.id;
@@ -555,8 +724,11 @@ function performAttack(attacker, defender) {
       defender.hp = 0;
       defender.alive = false;
       defender.deathAnim = 1;
-      playDeath();
+      dropInventory(defender);
+      playDeathVariant();
+      gameEvents.push({time:gameTime,type:'kill',detail:attacker.name+' slew '+defender.name});
       addLog(defender.name+' slain by '+attacker.name+'!', 'log-damage');
+      if (attacker.team !== undefined) teamKills[attacker.team]++;
       if (attacker.isPlayer && attacker.id === playerId) {
         kills++;
         score += 10;
@@ -593,7 +765,7 @@ function useSpecial(entity) {
       addLog(entity.name+' prepares Evasion!', 'log-info');
       break;
     case 'Mage': {
-      let nearby = entities.filter(e => e.alive && e.id !== entity.id && !e.isAlly && distFloat(e, entity) <= 3);
+      let nearby = entities.filter(e => e.alive && e.id !== entity.id && e.team !== entity.team && distFloat(e, entity) <= 3);
       let dmg = entity.stats.ene;
       for (let e of nearby) {
         e.hp -= dmg;
@@ -659,8 +831,8 @@ function moveEntitySmooth(entity, dx, dy, dt) {
     if (!walkable(checkX1, checkY) || !walkable(checkX2, checkY)) canMoveY = false;
   }
 
-  if (canMoveX) entity.x = Math.max(0.5, Math.min(MAP_SIZE - 1.5, entity.x + dx * moveAmount));
-  if (canMoveY) entity.y = Math.max(0.5, Math.min(MAP_SIZE - 1.5, entity.y + dy * moveAmount));
+  if (canMoveX) entity.x = Math.max(2, Math.min(MAP_SIZE - 3, entity.x + dx * moveAmount));
+  if (canMoveY) entity.y = Math.max(2, Math.min(MAP_SIZE - 3, entity.y + dy * moveAmount));
 
   return canMoveX || canMoveY;
 }
@@ -689,12 +861,17 @@ function updatePlayerMovement(dt) {
     for (let i = items.length - 1; i >= 0; i--) {
       if (Math.abs(items[i].x - player.x) < 0.7 && Math.abs(items[i].y - player.y) < 0.7) {
         let item = items[i];
-        if (player.stats[item.stat] < 9) {
-          player.stats[item.stat]++;
-          if (item.stat === 'ene') { player.maxHp = 10 + player.stats.ene * 2; player.hp = Math.min(player.hp + 2, player.maxHp); }
+        if (item.isFood) {
+          player.hp = Math.min(player.maxHp, player.hp + 1);
+          spawnFloatingText(player.x, player.y, '+1 HP 🍎', '#ff9966');
+          addLog('Ate '+item.name+'! (+1 HP)', 'log-item');
+        } else if (item.stat && player.stats[item.stat] !== undefined) {
+          let boost = item.golden ? 2 : 1;
+          player.stats[item.stat] = Math.min(9, player.stats[item.stat] + boost);
+          if (item.stat === 'ene') { player.maxHp = 10 + player.stats.ene * 2; player.hp = Math.min(player.hp + boost*2, player.maxHp); }
           if (item.stat === 'int') player.specialMaxCooldown = Math.max(3, 10 - player.stats.int);
+          addLog('Picked up '+(item.golden?'✨':'')+ item.name+'! (+'+boost+' '+STAT_LABELS[item.stat]+')', 'log-item');
         }
-        addLog('Picked up '+item.name+'! (+1 '+STAT_LABELS[item.stat]+')', 'log-item');
         playPickup();
         itemsCollected++;
         inventoryLog.push({ name: item.name, color: item.color });
@@ -713,7 +890,7 @@ function updatePlayerMovement(dt) {
     // Auto-attack: check for nearby enemies when walking into them
     if (playerAttackCooldown <= 0) {
       for (let e of entities) {
-        if (e === player || !e.alive || e.isAlly) continue;
+        if (e === player || !e.alive || e.team === player.team) continue;
         if (distFloat(player, e) < 1.0) {
           performAttack(player, e);
           playerAttackCooldown = Math.max(0.3, 1.0 - player.stats.spd * 0.1);
@@ -738,18 +915,11 @@ function aiTick(entity, dt) {
 
   let hpPct = entity.hp / entity.maxHp;
 
-  // Find all potential targets
-  let allTargets;
-  if (entity.isAlly) {
-    // Allies attack enemies (non-ally, non-player AIs)
-    allTargets = entities.filter(e => e.alive && e.id !== entity.id && !e.isPlayer && !e.isAlly);
-  } else {
-    // Enemies attack everyone except other non-ally enemies... actually they attack all
-    allTargets = entities.filter(e => e.alive && e.id !== entity.id);
-    // Add remote players
-    for (let rp of Object.values(remotePlayers)) {
-      if (rp.alive) allTargets.push(rp);
-    }
+  // Find all potential targets (different team only)
+  let allTargets = entities.filter(e => e.alive && e.id !== entity.id && e.team !== entity.team);
+  // Add remote players from different teams
+  for (let rp of Object.values(remotePlayers)) {
+    if (rp.alive && rp.team !== entity.team) allTargets.push(rp);
   }
 
   let nearest = null, nearDist = Infinity;
@@ -803,9 +973,22 @@ function aiTick(entity, dt) {
 function updateAIMovement(dt) {
   for (let e of entities) {
     if (e.isPlayer || !e.alive) continue;
-    // Apply smooth movement based on AI direction
-    if (e.moveVX !== 0 || e.moveVY !== 0) {
-      moveEntitySmooth(e, e.moveVX, e.moveVY, dt);
+    if (e.flying) {
+      // Flying: sinusoidal path, ignores terrain
+      e.flyPhase = (e.flyPhase||0) + dt * (0.8 + (e.stats.cmd||3) * 0.25);
+      let perpX = -e.moveVY, perpY = e.moveVX;
+      let amp = 0.6 + (e.stats.atk||3) * 0.1;
+      let swayX = perpX * Math.sin(e.flyPhase) * amp;
+      let swayY = perpY * Math.sin(e.flyPhase) * amp;
+      let spd = (0.8 + (e.stats.spd||3) * 0.25) * 1.2 * dt;
+      e.x += (e.moveVX + swayX) * spd * 5;
+      e.y += (e.moveVY + swayY) * spd * 5;
+      e.x = Math.max(1, Math.min(MAP_SIZE-2, e.x));
+      e.y = Math.max(1, Math.min(MAP_SIZE-2, e.y));
+    } else {
+      if (e.moveVX !== 0 || e.moveVY !== 0) {
+        moveEntitySmooth(e, e.moveVX, e.moveVY, dt);
+      }
     }
   }
 }
@@ -814,8 +997,8 @@ function updateAIMovement(dt) {
 function attemptRecruit() {
   if (!player || !player.alive || recruitCooldown > 0) return;
 
-  // Find nearest alive non-ally enemy within 3 tiles
-  let candidates = entities.filter(e => e.alive && !e.isPlayer && !e.isAlly && distFloat(player, e) <= 3);
+  // Find nearest alive enemy (different team) within 3 tiles
+  let candidates = entities.filter(e => e.alive && !e.isPlayer && e.team !== player.team && distFloat(player, e) <= 3);
   if (candidates.length === 0) {
     addLog('No enemies nearby to recruit!', 'log-info');
     return;
@@ -829,10 +1012,14 @@ function attemptRecruit() {
   recruitCooldown = 10; // 10 seconds cooldown
 
   if (playerRoll > enemyRoll) {
-    // Success
+    // Success - join player's team
+    target.isAlly = true;
+    target.team = player.team;
+    target.team = player.team;
     target.isAlly = true;
     target.color = '#7fffbf';
     playRecruit();
+    gameEvents.push({time:gameTime,type:'recruit',detail:player.name+' recruited '+target.name});
     addLog(target.name + ' has joined your cause! (CMD:' + playerRoll + ' vs INT:' + enemyRoll + ')', 'log-recruit');
     spawnFloatingText(target.x, target.y, 'RECRUITED', '#7fffbf');
   } else {
@@ -849,8 +1036,8 @@ function attemptRangedAttack() {
   if (!player || !player.alive || rangedCooldown > 0) return;
 
   let range = player.stats.cmd; // Command = range in tiles
-  // Find nearest alive non-ally enemy within range
-  let candidates = entities.filter(e => e.alive && !e.isPlayer && !e.isAlly && distFloat(player, e) <= range);
+  // Find nearest alive enemy (different team) within range
+  let candidates = entities.filter(e => e.alive && !e.isPlayer && e.team !== player.team && distFloat(player, e) <= range);
   if (candidates.length === 0) {
     addLog('No targets within range ' + range + ' tiles! (CMD ' + player.stats.cmd + ')', 'log-info');
     return;
@@ -885,36 +1072,44 @@ function attemptRangedAttack() {
 
 function updateProjectiles(dt) {
   for (let i = projectiles.length - 1; i >= 0; i--) {
-    let p = projectiles[i];
-    p.x += p.dx * p.speed * dt;
-    p.y += p.dy * p.speed * dt;
-    p.life -= dt * 1.5;
+    try {
+      let p = projectiles[i];
+      p.x += p.dx * p.speed * dt;
+      p.y += p.dy * p.speed * dt;
+      p.life -= dt * 1.5;
 
-    // Check if reached target
-    if (!p.hit && p.target && p.target.alive) {
-      let dx = p.x - p.target.x, dy = p.y - p.target.y;
-      if (dx*dx + dy*dy < 0.3) {
-        p.hit = true;
-        if (p.damage > 0) {
-          p.target.hp -= p.damage;
-          spawnFloatingText(p.target.x, p.target.y, '-' + p.damage, '#ffdd44');
-          playHit();
-          if (p.target.hp <= 0) {
-            p.target.alive = false;
-            p.target.deathAnim = 1.0;
-            kills++;
-            addLog('🏹 ' + p.target.name + ' slain by ranged attack!', 'log-kill');
-            playDeath();
-            checkGoals();
+      // Safety: remove if target gone
+      if (!p.target || !entities.includes(p.target)) { p.life = 0; }
+
+      if (!p.hit && p.target && p.target.alive) {
+        let dx = p.x - p.target.x, dy = p.y - p.target.y;
+        if (dx*dx + dy*dy < 0.4) {
+          p.hit = true;
+          if (p.damage > 0) {
+            p.target.hp -= p.damage;
+            spawnFloatingText(p.target.x, p.target.y, '-' + p.damage, '#ffdd44');
+            playHit();
+            if (p.target.hp <= 0) {
+              p.target.hp = 0;
+              p.target.alive = false;
+              p.target.deathAnim = 1.0;
+              dropInventory(p.target);
+              if (player && player.alive) {
+                kills++;
+                score += 10;
+              }
+              addLog('🏹 ' + p.target.name + ' slain by ranged attack!', 'log-kill');
+              playDeathVariant();
+              if (player) checkGoals();
+            }
+          } else {
+            spawnFloatingText(p.target.x, p.target.y, 'MISS', '#888');
           }
-        } else {
-          spawnFloatingText(p.target.x, p.target.y, 'MISS', '#888');
+          p.life = 0;
         }
-        p.life = 0;
       }
-    }
-
-    if (p.life <= 0) projectiles.splice(i, 1);
+      if (p.life <= 0) projectiles.splice(i, 1);
+    } catch(e) { projectiles.splice(i, 1); }
   }
 }
 
@@ -1006,6 +1201,10 @@ function drawTile(x, y) {
       topColor = '#3a6030'; leftColor = '#2a4820'; rightColor = '#1e3818'; depth = 5; break;
     case 'bridge':
       topColor = '#a07840'; leftColor = '#806030'; rightColor = '#685028'; depth = 6; break;
+    case 'road':
+      topColor = '#c0b090'; leftColor = '#9a8a6a'; rightColor = '#8a7a5a'; depth = 6; break;
+    case 'tower':
+      topColor = '#909090'; leftColor = '#707070'; rightColor = '#585858'; depth = 40; break;
     default:
       topColor = '#6dbf67'; leftColor = '#4e9948'; rightColor = '#3d7a39';
   }
@@ -1132,6 +1331,42 @@ function drawTile(x, y) {
     let flicker = Math.sin(animTime * 8 + x + y) * 0.15 + 0.85;
     ctx.fillStyle = 'rgba(255,120,20,'+(0.15 * flicker)+')';
     ctx.beginPath(); ctx.arc(sx, sy - 4, 4, 0, Math.PI * 2); ctx.fill();
+  }
+
+  // Road: center stripe
+  if (tile === 'road') {
+    ctx.strokeStyle = '#d8d0b8';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(sx - hw*0.3, sy - hh*0.3);
+    ctx.lineTo(sx + hw*0.3, sy + hh*0.3);
+    ctx.stroke();
+  }
+
+  // Tower: battlements on top
+  if (tile === 'tower') {
+    ctx.fillStyle = '#a0a0a0';
+    for (let i = -1; i <= 1; i++) {
+      ctx.fillRect(sx + i * 10 - 3, sy - hh - depth - 4, 6, 5);
+    }
+    // Flag on top
+    ctx.fillStyle = '#aa0000';
+    ctx.fillRect(sx, sy - hh - depth - 14, 8, 6);
+    ctx.fillStyle = '#666';
+    ctx.fillRect(sx - 1, sy - hh - depth - 16, 2, 18);
+  }
+
+  // Water: river flow direction indicator
+  if (tile === 'water') {
+    let flowX = Math.sin(animTime * 1.5 + x * 0.3) * 3;
+    ctx.globalAlpha = 0.15;
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(sx - 6 + flowX, sy);
+    ctx.lineTo(sx + 6 + flowX, sy);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
   }
 }
 
@@ -1366,6 +1601,7 @@ function render(timestamp) {
 
   updateProjectiles(dt);
   drawProjectiles();
+  drawCastleFlags();
   drawFloatingTexts(dt);
 
   // Minimap
@@ -1375,6 +1611,57 @@ function render(timestamp) {
 }
 
 // --- Minimap ---
+function drawCastleFlags() {
+  const TEAM_BANNERS = ['🔴','🟢','🟣','🟠'];
+  const TEAM_COLORS  = ['#ff4444','#44ff88','#aa44ff','#ffaa44'];
+  for (let castle of castles) {
+    let pp = isoProject(castle.x, castle.y);
+    let sx = pp.sx - camera.x + viewCX;
+    let sy = pp.sy - camera.y + viewCY - 30;
+    // Flagpole
+    ctx.strokeStyle = '#888';
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(sx, sy - 28); ctx.stroke();
+    // Flag color
+    let col = castle.team >= 0 ? TEAM_COLORS[castle.team] : '#aaa';
+    ctx.fillStyle = col;
+    ctx.beginPath(); ctx.moveTo(sx, sy-28); ctx.lineTo(sx+14, sy-22); ctx.lineTo(sx, sy-16); ctx.fill();
+    // Capture progress bar
+    if (castle.captureTeam >= 0 && castle.team !== castle.captureTeam) {
+      let pct = castle.captureProgress / 3;
+      ctx.fillStyle = 'rgba(0,0,0,0.5)';
+      ctx.fillRect(sx-15, sy+5, 30, 6);
+      ctx.fillStyle = TEAM_COLORS[castle.captureTeam];
+      ctx.fillRect(sx-15, sy+5, 30*pct, 6);
+    }
+    // Banner emoji
+    ctx.font = '14px serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(castle.team >= 0 ? TEAM_BANNERS[castle.team] : '🏳️', sx, sy - 30);
+    ctx.textAlign = 'left';
+  }
+}
+
+function generateNarrative() {
+  if (!player) return 'No game data.';
+  const TEAM_NAMES = ['Chaos','Nature','Arcane','Iron'];
+  let totalAlive = entities.filter(e=>e.alive);
+  let teamCounts = [0,0,0,0];
+  for (let e of totalAlive) if (e.team>=0) teamCounts[e.team]++;
+  let winTeam = teamCounts.indexOf(Math.max(...teamCounts));
+  let dramatic = gameEvents.slice(-8);
+  let lines = [];
+  lines.push(`The arena roared as ${player.name} the ${player.cls} entered the field for the ${TEAM_NAMES[player.team]||'Unknown'} faction.`);
+  for (let ev of dramatic) {
+    if (ev.type==='kill') lines.push(`At ${Math.floor(ev.time)}s, ${ev.detail}.`);
+    if (ev.type==='castle_captured') lines.push(`The fortress shook as ${ev.detail}.`);
+    if (ev.type==='recruit') lines.push(`A bold gambit: ${ev.detail}.`);
+  }
+  lines.push(`After ${Math.floor(gameTime)} seconds of brutal combat, ${player.name} fell in battle.`);
+  lines.push(`As the dust settled, the ${TEAM_NAMES[winTeam]||'Unknown'} faction stood victorious with ${Math.max(...teamCounts)} warriors remaining.`);
+  return lines.join(' ');
+}
+
 function drawMinimap() {
   let mmSize = 100;
   let mmX = canvas.width - mmSize - 10;
@@ -1538,29 +1825,142 @@ function gameTick() {
   // Clean up dead AIs
   entities = entities.filter(e => e.isPlayer || e.alive || e.deathAnim > 0);
 
+  // Water/lava damage
+  if (player.alive) {
+    let pt = tiles[Math.floor(player.y)] && tiles[Math.floor(player.y)][Math.floor(player.x)];
+    if (pt === 'water') {
+      player.hp -= 0.5;
+      spawnFloatingText(player.x, player.y, '-½', '#4fc3f7');
+      if (player.hp <= 0) { player.hp = 0; player.alive = false; showDeath(); }
+    } else if (pt === 'lava') {
+      player.hp -= 1;
+      spawnFloatingText(player.x, player.y, '-1🔥', '#ff6600');
+      if (player.hp <= 0) { player.hp = 0; player.alive = false; showDeath(); }
+    }
+  }
+  for (let e of entities) {
+    if (!e.alive || e.flying) continue;
+    let et = tiles[Math.floor(e.y)] && tiles[Math.floor(e.y)][Math.floor(e.x)];
+    if (et === 'water') e.hp -= 0.5;
+    else if (et === 'lava') e.hp -= 1;
+    if (e.hp <= 0) { e.hp = 0; e.alive = false; e.deathAnim = 1; dropInventory(e); }
+  }
+
+  // Unstuck system: if entity hasn't moved 0.15 tiles in 1 second (2 ticks), push it
+  for (let e of [...entities, player]) {
+    if (!e || !e.alive) continue;
+    let dx = e.x - (e.lastX || e.x), dy = e.y - (e.lastY || e.y);
+    if (dx*dx + dy*dy < 0.02) {
+      e.stuckTimer = (e.stuckTimer || 0) + 1;
+      if (e.stuckTimer >= 2) {
+        e.stuckTimer = 0;
+        // Try to push to random nearby open tile
+        let pushed = false;
+        for (let attempt = 0; attempt < 8; attempt++) {
+          let angle = Math.random() * Math.PI * 2;
+          let nx = e.x + Math.cos(angle) * 1.5;
+          let ny = e.y + Math.sin(angle) * 1.5;
+          nx = Math.max(2, Math.min(MAP_SIZE-3, nx));
+          ny = Math.max(2, Math.min(MAP_SIZE-3, ny));
+          if (walkable(Math.floor(nx), Math.floor(ny)) || e.flying) {
+            e.x = nx; e.y = ny; pushed = true; break;
+          }
+        }
+        if (!pushed) { e.x = Math.max(2, Math.min(MAP_SIZE-3, e.x)); e.y = Math.max(2, Math.min(MAP_SIZE-3, e.y)); }
+      }
+    } else {
+      e.stuckTimer = 0;
+    }
+    e.lastX = e.x; e.lastY = e.y;
+  }
+
+  // AI item pickup (if near item and no enemy close)
+  for (let e of entities) {
+    if (!e.alive || e.isPlayer) continue;
+    let nearEnemy = entities.some(o => o.alive && o.team !== e.team && distFloat(e, o) < 4);
+    if (!nearEnemy && e.inventory.length < 3) {
+      let nearItem = items.find(it => distFloat(e, it) < 0.8);
+      if (nearItem) {
+        let idx = items.indexOf(nearItem);
+        items.splice(idx, 1);
+        e.inventory.push(nearItem);
+        if (nearItem.isFood) { e.hp = Math.min(e.maxHp, e.hp + 1); }
+        else if (nearItem.stat && e.stats[nearItem.stat] !== undefined) { e.stats[nearItem.stat] = Math.min(9, e.stats[nearItem.stat] + (nearItem.golden ? 2 : 1)); }
+      }
+    }
+  }
+
+  // Castle capture logic
+  for (let castle of castles) {
+    let occupants = [...entities, player].filter(e => e && e.alive && distFloat(e, castle) < 1.5);
+    if (occupants.length === 0) { castle.captureProgress = 0; castle.captureTeam = -1; continue; }
+    let teamCounts = {};
+    for (let o of occupants) { teamCounts[o.team] = (teamCounts[o.team]||0)+1; }
+    let topTeam = Object.keys(teamCounts).sort((a,b)=>teamCounts[b]-teamCounts[a])[0];
+    if (castle.captureTeam !== Number(topTeam)) { castle.captureProgress = 0; castle.captureTeam = Number(topTeam); }
+    castle.captureProgress += 0.5;
+    if (castle.captureProgress >= 3 && castle.team !== Number(topTeam)) {
+      castle.team = Number(topTeam);
+      castle.captureProgress = 0;
+      let teamNames = ['CHAOS','NATURE','ARCANE','IRON'];
+      let tname = castle.team === player.team ? 'YOUR TEAM' : teamNames[castle.team]||'Unknown';
+      addLog('🏰 Castle #'+(castles.indexOf(castle)+1)+' captured by '+tname+'!', 'log-world');
+      gameEvents.push({time:gameTime,type:'castle_captured',detail:'Castle '+(castles.indexOf(castle)+1)+' captured by '+tname});
+      // Spawn unit
+      let spawner = occupants[0];
+      let newAI = createEntity(randomName(), false, undefined, castle.team);
+      newAI.x = castle.x + (Math.random()-0.5)*2; newAI.y = castle.y + (Math.random()-0.5)*2;
+      entities.push(newAI);
+    }
+    // Periodic spawn from captured castle
+    castle.spawnTimer = (castle.spawnTimer||0) + 0.5;
+    if (castle.spawnTimer >= 10 && castle.team >= 0) {
+      castle.spawnTimer = 0;
+      let aiCount = entities.filter(e=>e.alive).length;
+      if (aiCount < 30) {
+        let newAI = createEntity(randomName(), false, undefined, castle.team);
+        newAI.x = castle.x + (Math.random()-0.5)*3; newAI.y = castle.y + (Math.random()-0.5)*3;
+        newAI.x = Math.max(2,Math.min(MAP_SIZE-3,newAI.x)); newAI.y = Math.max(2,Math.min(MAP_SIZE-3,newAI.y));
+        entities.push(newAI);
+        addLog('🏰 Castle spawns '+newAI.name+'!','log-world');
+      }
+    }
+  }
+
+  // Item scatter every 10s
+  itemScatterTimer = (itemScatterTimer||0) + 0.5;
+  if (itemScatterTimer >= 10) {
+    itemScatterTimer = 0;
+    scatterItems(2);
+    spawnFoodItems(1);
+  }
+
   // Host: AI spawn
   if (isHost) {
     aiSpawnTimer += 500;
-    if (aiSpawnTimer >= 15000) {
+    if (aiSpawnTimer >= 8000) {
       aiSpawnTimer = 0;
       let aiCount = entities.filter(e => !e.isPlayer && e.alive).length;
-      if (aiCount < 15) {
+      if (aiCount < 30) {
+        let isFlying = Math.random() < 0.12;
         let ai = createEntity(randomName(), false);
+        if (isFlying) {
+          ai.flying = true;
+          const FLYING_NAMES = ['🦅 Eagle Rider','🐦 Storm Raven','🦉 Night Owl','🦋 Chaos Moth','🐝 Killer Bee','🕊️ Death Dove','🦜 Hex Parrot','🦆 War Duck'];
+          ai.name = FLYING_NAMES[Math.floor(Math.random()*FLYING_NAMES.length)];
+          ai.color = '#88eeff';
+        }
         entities.push(ai);
         playSpawn();
-        addLog(ai.name+' the '+ai.cls+' appears!', 'log-world');
+        addLog((isFlying?'✈️ ':'')+ ai.name+' the '+ai.cls+' appears!', 'log-world');
       }
     }
-
-    // World updates disabled per design choice
   }
 
-  // Clean stale remote players (no update for 5s)
+  // Clean stale remote players
   let now = Date.now();
   for (let id of Object.keys(remotePlayers)) {
-    if (remotePlayers[id]._lastSeen && now - remotePlayers[id]._lastSeen > 5000) {
-      delete remotePlayers[id];
-    }
+    if (remotePlayers[id]._lastSeen && now - remotePlayers[id]._lastSeen > 5000) delete remotePlayers[id];
   }
 
   updateGoals();
@@ -1731,12 +2131,15 @@ function showDeath() {
   isDead = true;
   document.getElementById('death-overlay').style.display = 'flex';
   let finalScore = kills * 10 + itemsCollected * 5 + goalsCompleted * 25 + Math.floor(gameTime / 10);
+  let narrative = generateNarrative();
   document.getElementById('death-stats').innerHTML =
     '<div>Kills: '+kills+' ('+kills*10+' pts)</div>' +
     '<div>Items: '+itemsCollected+' ('+itemsCollected*5+' pts)</div>' +
     '<div>Goals: '+goalsCompleted+' ('+goalsCompleted*25+' pts)</div>' +
     '<div>Survived: '+Math.floor(gameTime)+'s ('+Math.floor(gameTime/10)+' pts)</div>' +
-    '<div style="margin-top:8px;font-size:20px;color:#f0c040">Final Score: '+finalScore+'</div>';
+    '<div style="margin-top:8px;font-size:20px;color:#f0c040">Final Score: '+finalScore+'</div>' +
+    '<div style="margin-top:12px;padding:10px;background:rgba(255,220,100,0.08);border:1px solid #f0c04044;border-radius:6px;font-size:12px;color:#ddd;line-height:1.7;text-align:left;max-width:420px">'+narrative+'</div>' +
+    '<button onclick="navigator.clipboard.writeText('+JSON.stringify(narrative)+')" style="margin-top:8px;padding:6px 16px;background:#333;border:1px solid #666;color:#fff;border-radius:4px;cursor:pointer">📋 Copy Chronicle</button>';
 }
 
 function respawn() {
@@ -1823,7 +2226,9 @@ function init() {
   resizeCanvas();
   window.addEventListener('resize', resizeCanvas);
   generateMap();
-  scatterItems(15);
+  generateCastles();
+  scatterItems(20);
+  spawnFoodItems(8);
   initMultiplayer();
   setInterval(gameTick, 500);
   requestAnimationFrame(render);
