@@ -922,18 +922,27 @@ function aiTick(entity, dt) {
     if (rp.alive && rp.team !== entity.team) allTargets.push(rp);
   }
 
+  // Intelligence = vision range (INT 1 = 2 tiles, INT 6 = 12 tiles)
+  let visionRange = 2 + entity.stats.int * 1.67;
+
+  // Only consider targets within vision range
   let nearest = null, nearDist = Infinity;
   for (let t of allTargets) {
     let d = distFloat(entity, t);
-    if (d < nearDist) { nearDist = d; nearest = t; }
+    if (d <= visionRange && d < nearDist) { nearDist = d; nearest = t; }
+  }
+  // Also add local player if in range
+  if (player && player.alive && player.team !== entity.team) {
+    let dp = distFloat(entity, player);
+    if (dp <= visionRange && dp < nearDist) { nearDist = dp; nearest = player; }
   }
 
   // Set movement direction based on AI decision
   entity.moveVX = 0;
   entity.moveVY = 0;
 
-  // Flee if low HP
-  if (hpPct < 0.2 && nearest && nearDist < 5) {
+  // Flee if low HP and can see an enemy
+  if (hpPct < 0.2 && nearest) {
     entity.moveVX = Math.sign(entity.x - nearest.x) || 1;
     entity.moveVY = Math.sign(entity.y - nearest.y) || 1;
     return;
@@ -944,9 +953,9 @@ function aiTick(entity, dt) {
     useSpecial(entity);
   }
 
-  // Attack if close
+  // Attack if adjacent
   if (nearest && nearDist <= 1.2 && entity.combatTimer <= 0) {
-    let realTarget = entities.find(e => e.id === nearest.id);
+    let realTarget = entities.find(e => e.id === nearest.id) || (nearest === player ? player : null);
     if (realTarget && realTarget.alive) {
       performAttack(entity, realTarget);
       entity.combatTimer = Math.max(500, 2000 - entity.stats.spd * 150);
@@ -954,15 +963,30 @@ function aiTick(entity, dt) {
     return;
   }
 
-  // Chase if within 6 tiles
-  if (nearest && nearDist <= 6) {
+  // Chase if visible
+  if (nearest) {
     entity.moveVX = Math.sign(nearest.x - entity.x);
     entity.moveVY = Math.sign(nearest.y - entity.y);
     return;
   }
 
-  // Wander randomly
-  if (Math.random() < 0.3) {
+  // Move toward nearest item if none visible and has room in inventory
+  if (entity.inventory.length < 3) {
+    let nearItem = null, nearItemDist = Infinity;
+    for (let it of items) {
+      let d = distFloat(entity, it);
+      if (d < nearItemDist && d < visionRange) { nearItemDist = d; nearItem = it; }
+    }
+    if (nearItem) {
+      entity.moveVX = Math.sign(nearItem.x - entity.x);
+      entity.moveVY = Math.sign(nearItem.y - entity.y);
+      return;
+    }
+  }
+
+  // Wander randomly (lower-INT mobs wander more erratically)
+  let wanderChance = 0.2 + (6 - entity.stats.int) * 0.05;
+  if (Math.random() < wanderChance) {
     let dirs = [[1,0],[-1,0],[0,1],[0,-1],[1,1],[-1,-1],[1,-1],[-1,1]];
     let d = dirs[Math.floor(Math.random()*dirs.length)];
     entity.moveVX = d[0];
@@ -1846,9 +1870,9 @@ function gameTick() {
     if (e.hp <= 0) { e.hp = 0; e.alive = false; e.deathAnim = 1; dropInventory(e); }
   }
 
-  // Unstuck system: if entity hasn't moved 0.15 tiles in 1 second (2 ticks), push it
-  for (let e of [...entities, player]) {
-    if (!e || !e.alive) continue;
+  // Unstuck system: AI only — never applied to player
+  for (let e of entities) {
+    if (!e || !e.alive || e.isPlayer) continue;
     let dx = e.x - (e.lastX || e.x), dy = e.y - (e.lastY || e.y);
     if (dx*dx + dy*dy < 0.02) {
       e.stuckTimer = (e.stuckTimer || 0) + 1;
