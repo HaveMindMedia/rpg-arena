@@ -183,7 +183,7 @@ body { background: #1a1a2e; color: #eee; font-family: 'Segoe UI', Tahoma, Geneva
 // ============================================================
 
 // --- Constants ---
-const TILE_W = 64, TILE_H = 32;
+const TILE_W = 96, TILE_H = 48; // Zoomed in: larger tiles = less map visible
 const MAP_SIZE = 60;
 const CLASS_COLORS = { Warrior:'#e04040', Guardian:'#4080e0', Scout:'#e0c040', Mage:'#a040e0', Sage:'#40d0d0', Commander:'#e08020' };
 const CLASS_LIST = ['Warrior','Guardian','Scout','Mage','Sage','Commander'];
@@ -200,10 +200,30 @@ const ABILITIES = {
 
 // --- Team Definitions ---
 const TEAMS = [
-  { id:0, name:'CHAOS', color:'#ff4444', banner:'🔴', monsters:['💀 Bone Wraith','☠️ Death Knight','🩸 Blood Imp','👿 Demon Lord','🔥 Hellspawn','💢 Rage Beast','🌑 Void Shade'] },
-  { id:1, name:'NATURE', color:'#44ff88', banner:'🟢', monsters:['🐺 Wolf Pack','🌿 Forest Troll','🦇 Cave Bat','🌲 Treant','🍄 Spore Beast','🐉 Forest Drake','🦎 Lizardman'] },
-  { id:2, name:'ARCANE', color:'#aa44ff', banner:'🟣', monsters:['👾 Arcane Wisp','🧛 Vampire','🔮 Crystal Golem','⚡ Storm Elemental','🌀 Chaos Mage','💫 Star Specter','🧿 Mind Flayer'] },
-  { id:3, name:'IRON', color:'#ffaa44', banner:'🟠', monsters:['⚔️ Iron Guard','🛡️ Shield Brute','🗡️ Blade Dancer','🏹 Arrow Captain','⚙️ War Machine','🔩 Iron Golem','🪖 War Chief'] }
+  { id:0, name:'CHAOS', color:'#ff4444', banner:'🔴', monsters:[
+    '💀 Bone Wraith','☠️ Death Knight','🩸 Blood Imp','👿 Demon Lord','🔥 Hellspawn',
+    '💢 Rage Beast','🌑 Void Shade','🦴 Skeleton','🧟 Revenant','🕳️ Abyss Walker',
+    '🩻 Cursed Bones','🖤 Dark Fiend','💣 Chaos Bomber','🌪️ Death Vortex','🕸️ Dread Spider',
+    '🧠 Mind Eater','👁️ Eye of Doom','🔱 Chaos Lord','⛧ Void Priest','🌊 Blood Tide'
+  ]},
+  { id:1, name:'NATURE', color:'#44ff88', banner:'🟢', monsters:[
+    '🐺 Wolf Pack','🌿 Forest Troll','🦇 Cave Bat','🌲 Treant','🍄 Spore Beast',
+    '🐉 Forest Drake','🦎 Lizardman','🐗 Boar Rider','🦅 Sky Hunter','🐍 Serpent',
+    '🦁 Pride Warrior','🐻 Bear Shaman','🌵 Cactus Brute','🦋 Moth Witch','🐊 River Lurker',
+    '🦚 Peacock Mage','🐘 Stampede Lord','🌺 Bloom Dancer','🦜 Hex Parrot','🌙 Moon Druid'
+  ]},
+  { id:2, name:'ARCANE', color:'#aa44ff', banner:'🟣', monsters:[
+    '👾 Arcane Wisp','🧛 Vampire','🔮 Crystal Golem','⚡ Storm Elemental','🌀 Chaos Mage',
+    '💫 Star Specter','🧿 Mind Flayer','🪄 Spell Thief','🔭 Void Gazer','🌌 Nebula Wraith',
+    '🎭 Illusion Master','🧊 Frost Lich','☄️ Meteor Sage','🌠 Star Caller','🔬 Alchemist',
+    '🎇 Spark Dancer','💠 Crystal Seer','🌀 Rune Binder','⚗️ Potion Witch','🪬 Arcane Eye'
+  ]},
+  { id:3, name:'IRON', color:'#ffaa44', banner:'🟠', monsters:[
+    '⚔️ Iron Guard','🛡️ Shield Brute','🗡️ Blade Dancer','🏹 Arrow Captain','⚙️ War Machine',
+    '🔩 Iron Golem','🪖 War Chief','🔨 Hammer Lord','🗜️ Vice Crusher','🧱 Stone Sentinel',
+    '🏋️ Siege Master','⛏️ Pick Raider','🔧 Wrench Warrior','🪚 Saw Berserker','🛠️ Forge Knight',
+    '🚂 Iron Titan','💪 Steel Ogre','🦾 Mech Soldier','🎯 Bolt Hunter','🪣 Chain Warrior'
+  ]}
 ];
 let teamKills = [0,0,0,0];
 
@@ -289,7 +309,7 @@ function generateMap() {
       } else if (r < 0.77) {
         tiles[y][x] = 'ice';
       } else if (r < 0.79) {
-        tiles[y][x] = 'lava';
+        
       } else {
         tiles[y][x] = 'grass';
       }
@@ -445,7 +465,7 @@ function tileSpeedMult(x, y) {
   if (x < 0 || y < 0 || x >= MAP_SIZE || y >= MAP_SIZE) return 1;
   let t = tiles[Math.floor(y)][Math.floor(x)];
   if (t === 'water') return 0.35;
-  if (t === 'lava')  return 0.25;
+  
   if (t === 'swamp') return 0.45;
   if (t === 'sand')  return 0.75;
   if (t === 'ice')   return 1.3; // slippery fast
@@ -619,19 +639,56 @@ function spawnFoodItems(n) {
   }
 }
 
+function stampCastle(cx, cy) {
+  // 5x5 wall ring with dungeon center and open entrance
+  for (let dy=-2;dy<=2;dy++) for (let dx=-2;dx<=2;dx++) {
+    let ax=cx+dx, ay=cy+dy;
+    if (ax<1||ay<1||ax>=MAP_SIZE-1||ay>=MAP_SIZE-1) continue;
+    let isEdge = Math.abs(dx)===2 || Math.abs(dy)===2;
+    tiles[ay][ax] = isEdge ? 'wall' : 'dungeon';
+  }
+  // Open the south entrance
+  tiles[cy+2][cx] = 'dungeon';
+  tiles[cy+2][cx-1] = 'dungeon';
+  tiles[cy+2][cx+1] = 'dungeon';
+}
+
 function generateCastles() {
   castles = [];
-  const positions = [
-    {x:8,y:8},{x:MAP_SIZE-9,y:8},{x:8,y:MAP_SIZE-9},{x:MAP_SIZE-9,y:MAP_SIZE-9},
-    {x:Math.floor(MAP_SIZE/2),y:Math.floor(MAP_SIZE/2)}
+  // Corner castles pre-assigned to each faction
+  const corners = [
+    {x:8,  y:8,           team:0},
+    {x:MAP_SIZE-9, y:8,   team:1},
+    {x:8,  y:MAP_SIZE-9,  team:2},
+    {x:MAP_SIZE-9, y:MAP_SIZE-9, team:3}
   ];
-  for (let pos of positions) {
-    // Stamp a 3x3 wall ring with open center
-    for (let dy=-1;dy<=1;dy++) for (let dx=-1;dx<=1;dx++) {
-      if (Math.abs(dx)===1||Math.abs(dy)===1) tiles[pos.y+dy][pos.x+dx]='wall';
+  // Neutral central castle
+  const center = {x:Math.floor(MAP_SIZE/2), y:Math.floor(MAP_SIZE/2), team:-1};
+
+  for (let pos of [...corners, center]) {
+    stampCastle(pos.x, pos.y);
+    castles.push({x:pos.x, y:pos.y, team:pos.team, captureProgress:3,
+                  captureTeam:pos.team, spawnTimer:0});
+  }
+}
+
+function spawnStartingArmies() {
+  const corners = [
+    {x:8,  y:8,           team:0},
+    {x:MAP_SIZE-9, y:8,   team:1},
+    {x:8,  y:MAP_SIZE-9,  team:2},
+    {x:MAP_SIZE-9, y:MAP_SIZE-9, team:3}
+  ];
+  for (let corner of corners) {
+    for (let i = 0; i < 4; i++) {
+      let mob = createEntity(randomName(corner.team), false, undefined, corner.team);
+      // Scatter near their castle
+      let angle = (i / 4) * Math.PI * 2;
+      mob.x = Math.max(2, Math.min(MAP_SIZE-3, corner.x + Math.cos(angle) * 3.5));
+      mob.y = Math.max(2, Math.min(MAP_SIZE-3, corner.y + Math.sin(angle) * 3.5));
+      mob.renderX = mob.x; mob.renderY = mob.y;
+      entities.push(mob);
     }
-    tiles[pos.y][pos.x] = 'dungeon'; // Castle center
-    castles.push({x:pos.x,y:pos.y,team:-1,captureProgress:0,captureTeam:-1,spawnTimer:0});
   }
 }
 
@@ -1213,12 +1270,9 @@ function drawTile(x, y) {
       topColor = '#303030'; leftColor = '#202020'; rightColor = '#181818'; depth = 6; break;
     case 'sand':
       topColor = '#d4b06a'; leftColor = '#b89050'; rightColor = '#9a7840'; break;
-    case 'lava': {
-      let wave = Math.sin(animTime * 4 + x * 0.8 + y * 0.6) * 0.2;
-      let r = Math.floor(220 + wave * 35), g = Math.floor(80 + wave * 40);
-      topColor = 'rgb('+r+','+g+',20)'; leftColor = '#8a2010'; rightColor = '#6a1808';
-      depth = 4; break;
-    }
+    case 'lava': // Replaced by swamp
+    case 'swamp':
+      topColor = '#3a6030'; leftColor = '#2a4820'; rightColor = '#1e3818'; depth = 5; break;
     case 'ice':
       topColor = '#c8e8f8'; leftColor = '#a0c8e0'; rightColor = '#88b0d0'; break;
     case 'swamp':
@@ -1253,15 +1307,7 @@ function drawTile(x, y) {
   ctx.moveTo(sx, sy - hh); ctx.lineTo(sx + hw, sy); ctx.lineTo(sx, sy + hh); ctx.lineTo(sx - hw, sy);
   ctx.closePath(); ctx.fill();
 
-  // Lava glow
-  if (tile === 'lava') {
-    let glowIntensity = 0.15 + Math.sin(animTime * 5 + x + y) * 0.1;
-    let grad = ctx.createRadialGradient(sx, sy, 2, sx, sy, 30);
-    grad.addColorStop(0, 'rgba(255,100,20,' + glowIntensity + ')');
-    grad.addColorStop(1, 'rgba(255,60,10,0)');
-    ctx.fillStyle = grad;
-    ctx.fillRect(sx - 30, sy - 30, 60, 60);
-  }
+
 
   // Ice sheen
   if (tile === 'ice') {
@@ -1706,7 +1752,7 @@ function drawMinimap() {
         case 'wall': ctx.fillStyle = '#555'; break;
         case 'dungeon': ctx.fillStyle = '#442200'; break;
         case 'sand': ctx.fillStyle = '#b89050'; break;
-        case 'lava': ctx.fillStyle = '#cc4010'; break;
+        case 'lava': ctx.fillStyle = '#3a6030'; break; // treated as swamp
         case 'ice': ctx.fillStyle = '#a0d0e8'; break;
         case 'swamp': ctx.fillStyle = '#2a4820'; break;
         case 'bridge': ctx.fillStyle = '#8a6838'; break;
@@ -1849,16 +1895,12 @@ function gameTick() {
   // Clean up dead AIs
   entities = entities.filter(e => e.isPlayer || e.alive || e.deathAnim > 0);
 
-  // Water/lava damage
+  // Water damage (lava removed)
   if (player.alive) {
     let pt = tiles[Math.floor(player.y)] && tiles[Math.floor(player.y)][Math.floor(player.x)];
     if (pt === 'water') {
       player.hp -= 0.5;
       spawnFloatingText(player.x, player.y, '-½', '#4fc3f7');
-      if (player.hp <= 0) { player.hp = 0; player.alive = false; showDeath(); }
-    } else if (pt === 'lava') {
-      player.hp -= 1;
-      spawnFloatingText(player.x, player.y, '-1🔥', '#ff6600');
       if (player.hp <= 0) { player.hp = 0; player.alive = false; showDeath(); }
     }
   }
@@ -1866,7 +1908,6 @@ function gameTick() {
     if (!e.alive || e.flying) continue;
     let et = tiles[Math.floor(e.y)] && tiles[Math.floor(e.y)][Math.floor(e.x)];
     if (et === 'water') e.hp -= 0.5;
-    else if (et === 'lava') e.hp -= 1;
     if (e.hp <= 0) { e.hp = 0; e.alive = false; e.deathAnim = 1; dropInventory(e); }
   }
 
@@ -2015,13 +2056,7 @@ function worldUpdate() {
   }
 
   // Occasionally spawn lava patches
-  if (Math.random() < 0.2) {
-    let lx = 3 + Math.floor(Math.random() * (MAP_SIZE - 6));
-    let ly = 3 + Math.floor(Math.random() * (MAP_SIZE - 6));
-    for (let dy = 0; dy < 2; dy++)
-      for (let dx = 0; dx < 2; dx++)
-        if (lx+dx < MAP_SIZE-1 && ly+dy < MAP_SIZE-1) tiles[ly+dy][lx+dx] = 'lava';
-  }
+  
 
   addLog('The world shifts...', 'log-world');
 }
@@ -2251,6 +2286,7 @@ function init() {
   window.addEventListener('resize', resizeCanvas);
   generateMap();
   generateCastles();
+  spawnStartingArmies();
   scatterItems(20);
   spawnFoodItems(8);
   initMultiplayer();
