@@ -186,6 +186,7 @@ body { background: #1a1a2e; color: #eee; font-family: 'Segoe UI', Tahoma, Geneva
 const TILE_W = 96, TILE_H = 48; // Zoomed in: larger tiles = less map visible
 const MAP_SIZE = 60;
 const CLASS_COLORS = { Warrior:'#e04040', Guardian:'#4080e0', Scout:'#e0c040', Mage:'#a040e0', Sage:'#40d0d0', Commander:'#e08020' };
+const CLASS_EMOJI = { Warrior:'⚔️', Guardian:'🛡️', Scout:'🏹', Mage:'🔮', Sage:'📜', Commander:'👑' };
 const CLASS_LIST = ['Warrior','Guardian','Scout','Mage','Sage','Commander'];
 const STAT_NAMES = ['atk','def','spd','ene','int','cmd'];
 const STAT_LABELS = { atk:'Attack', def:'Defense', spd:'Speed', ene:'Energy', int:'Intelligence', cmd:'Command' };
@@ -229,7 +230,15 @@ let teamKills = [0,0,0,0];
 
 const ADJ = ['Fierce','Swift','Dark','Grim','Ancient','Wild','Cursed','Hollow','Blazing','Rotten','Iron','Shadow','Frost','Vile','Hungry','Broken','Cruel','Savage','Twisted','Sly'];
 const MONSTERS = ['Troll','Goblin','Orc','Shade','Wraith','Beast','Ogre','Revenant','Ghoul','Specter','Drake','Imp','Bandit','Golem','Serpent','Lich','Brute','Raider','Cultist','Demon'];
-const MOB_EMOJI = ['👹','👺','💀','🧟','🐉','👾','🦇','🕷️','🐺','🦂','🧛','☠️','🔥','💢','⚔️','🗡️','🩸','🌑','👁️','🤺'];
+const MOB_EMOJI = [
+  '👹','👺','💀','🧟','🐉','👾','🦇','🕷️','🐺','🦂','🧛','☠️','🔥','💢','⚔️','🗡️','🩸','🌑','👁️','🤺',
+  '🦁','🐻','🐗','🦅','🐍','🦎','🐊','🦚','🐘','🦜','🌿','🍄','🌲','🌵','🌺',
+  '🔮','⚡','🌀','💫','🧿','🪄','🔭','🌌','🎭','🧊','☄️','🌠','⚗️','🪬','🎇',
+  '⚙️','🔩','🪖','🔨','🗜️','⛏️','🔧','🪚','🛠️','💪','🦾','🎯','🪣','🏋️','🚂',
+  '🩻','🖤','💣','🌪️','🕸️','🧠','🔱','⛧','🦴','🕳️','🫀','🧨','🌊','🌋','🧿',
+  '🦊','🐲','🦄','🐦','🕊️','🦋','🐝','🦗','🦆','🦉','🦤','🪶','🐓','🦃','🦚',
+  '🧙','🧝','🧞','🧜','🧚','🪡','🎪','🃏','🎭','🗺️','⚗️','🔬','🧬','🫧','🌙'
+];
 const ITEM_DEFS = {
   atk: { names:['Iron Sword','Battle Axe','War Hammer'], color:'#e04040' },
   def: { names:['Shield','Chain Mail','Tower Shield'], color:'#4080e0' },
@@ -1824,20 +1833,60 @@ function showVictory(teamName, banner, isPlayerTeam) {
 function generateNarrative() {
   if (!player) return 'No game data.';
   const TEAM_NAMES = ['Chaos','Nature','Arcane','Iron'];
+  const TEAM_BANNERS = ['🔴','🟢','🟣','🟠'];
   let totalAlive = entities.filter(e=>e.alive);
   let teamCounts = [0,0,0,0];
   for (let e of totalAlive) if (e.team>=0) teamCounts[e.team]++;
   let winTeam = teamCounts.indexOf(Math.max(...teamCounts));
-  let dramatic = gameEvents.slice(-8);
-  let lines = [];
-  lines.push(`The arena roared as ${player.name} the ${player.cls} entered the field for the ${TEAM_NAMES[player.team]||'Unknown'} faction.`);
+
+  let pDisplay = player.displayName || (CLASS_EMOJI[player.cls]||'🧑')+' '+player.name;
+  let pTeamBanner = TEAM_BANNERS[player.team] || '⚔️';
+  let pTeamName = TEAM_NAMES[player.team] || 'Unknown';
+
+  // Dramatic opening lines
+  const openings = [
+    `The drums of war echoed as ${pDisplay} the ${player.cls} charged into battle under the ${pTeamBanner} ${pTeamName} banner.`,
+    `${pDisplay} stepped onto the blood-soaked field, fighting for ${pTeamBanner} ${pTeamName}.`,
+    `The arena fell silent — then erupted as ${pDisplay} the ${player.cls} entered for ${pTeamBanner} ${pTeamName}.`,
+  ];
+  let lines = [openings[Math.floor(Math.random()*openings.length)]];
+
+  // Pick most dramatic events
+  let dramatic = [...gameEvents].sort((a,b) => {
+    const w = {castle_captured:3, kill:2, recruit:2};
+    return (w[b.type]||1) - (w[a.type]||1);
+  }).slice(0, 7);
+  dramatic.sort((a,b) => a.time - b.time);
+
+  const killPhrases = ['cut down','slew','vanquished','destroyed','obliterated','dispatched'];
+  const castlePhrases = ['seized','claimed','stormed','raised their flag over','conquered'];
+
   for (let ev of dramatic) {
-    if (ev.type==='kill') lines.push(`At ${Math.floor(ev.time)}s, ${ev.detail}.`);
-    if (ev.type==='castle_captured') lines.push(`The fortress shook as ${ev.detail}.`);
-    if (ev.type==='recruit') lines.push(`A bold gambit: ${ev.detail}.`);
+    if (ev.type === 'kill') {
+      let phrase = killPhrases[Math.floor(Math.random()*killPhrases.length)];
+      lines.push(`At ${Math.floor(ev.time)}s — ${ev.detail.replace(' slew ', ' '+phrase+' ')}.`);
+    }
+    if (ev.type === 'castle_captured') {
+      let phrase = castlePhrases[Math.floor(Math.random()*castlePhrases.length)];
+      lines.push(`${ev.detail.replace('captured by', phrase+' it for')}.`);
+    }
+    if (ev.type === 'recruit') {
+      lines.push(`A bold gambit: ${ev.detail}.`);
+    }
   }
-  lines.push(`After ${Math.floor(gameTime)} seconds of brutal combat, ${player.name} fell in battle.`);
-  lines.push(`As the dust settled, the ${TEAM_NAMES[winTeam]||'Unknown'} faction stood victorious with ${Math.max(...teamCounts)} warriors remaining.`);
+
+  // Ending
+  const endings = [
+    `After ${Math.floor(gameTime)} seconds of brutal combat, ${pDisplay} fell — their legend written in blood.`,
+    `${pDisplay}'s run ended at ${Math.floor(gameTime)}s, their deeds remembered by those who watched.`,
+    `The arena claimed ${pDisplay} after ${Math.floor(gameTime)} seconds of glorious struggle.`,
+  ];
+  lines.push(endings[Math.floor(Math.random()*endings.length)]);
+
+  // Victor
+  let winBanner = TEAM_BANNERS[winTeam] || '⚑';
+  let winName = TEAM_NAMES[winTeam] || 'Unknown';
+  lines.push(`As the dust settled, ${winBanner} ${winName} stood victorious with ${Math.max(...teamCounts)} warriors still standing.`);
   return lines.join(' ');
 }
 
@@ -2066,10 +2115,22 @@ function gameTick() {
 
   // Castle capture logic
   for (let castle of castles) {
-    let occupants = [...entities, player].filter(e => e && e.alive && distFloat(e, castle) < 1.5);
+    let occupants = [...entities, player].filter(e => e && e.alive && distFloat(e, castle) < 1.8);
     if (occupants.length === 0) { castle.captureProgress = 0; castle.captureTeam = -1; continue; }
+
+    // Count by team
     let teamCounts = {};
     for (let o of occupants) { teamCounts[o.team] = (teamCounts[o.team]||0)+1; }
+
+    // If current owner still has troops here, castle cannot be captured — contest only
+    if (castle.team >= 0 && teamCounts[castle.team] > 0) {
+      // Owning team is defending — reset any capture progress by enemies
+      castle.captureProgress = 0;
+      castle.captureTeam = castle.team;
+      continue; // Defenders hold
+    }
+
+    // Owner evicted (or castle neutral) — attacker can now claim it
     let topTeam = Object.keys(teamCounts).sort((a,b)=>teamCounts[b]-teamCounts[a])[0];
     if (castle.captureTeam !== Number(topTeam)) { castle.captureProgress = 0; castle.captureTeam = Number(topTeam); }
     castle.captureProgress += 0.5;
@@ -2269,6 +2330,9 @@ function createCharacter() {
   if (!name) name = 'Hero';
 
   player = createEntity(name, true, playerId);
+  // Give player their class emoji prefix once class is assigned
+  let clsEmoji = CLASS_EMOJI[player.cls] || '🧑';
+  player.displayName = clsEmoji + ' ' + name; // used in narrative/log
   entities.push(player);
 
   document.getElementById('creation-overlay').style.display = 'none';
@@ -2277,7 +2341,7 @@ function createCharacter() {
   let pp = isoProject(player.x, player.y);
   camera.x = pp.sx; camera.y = pp.sy;
 
-  addLog(player.name+' the '+player.cls+' enters the arena!', 'log-info');
+  addLog((player.displayName||player.name)+' the '+player.cls+' enters the arena!', 'log-info');
   addLog('Ability: '+ABILITIES[player.cls].name+' - '+ABILITIES[player.cls].desc, 'log-info');
   addLog('WASD/Arrows: move | Space: special | F: ranged attack | R: recruit | Walk into enemy: melee', 'log-info');
   addLog('Use the Recruit button to command nearby enemies!', 'log-info');
@@ -2317,6 +2381,7 @@ function respawn() {
   entities = entities.filter(e => e.id !== playerId);
   let name = player.name;
   player = createEntity(name, true, playerId);
+  player.displayName = (CLASS_EMOJI[player.cls]||'🧑') + ' ' + name;
   entities.push(player);
   kills = 0; itemsCollected = 0; goalsCompleted = 0; gameTime = 0;
   score = 0; isDead = false; inventoryLog = [];
@@ -2324,7 +2389,7 @@ function respawn() {
   initGoals();
   combatLogEntries = [];
   document.getElementById('combat-log').innerHTML = '';
-  addLog(player.name+' the '+player.cls+' returns!', 'log-info');
+  addLog((player.displayName||player.name)+' the '+player.cls+' returns!', 'log-info');
 }
 
 function playerWait() {
