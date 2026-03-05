@@ -109,7 +109,7 @@ body { background: #1a1a2e; color: #eee; font-family: 'Segoe UI', Tahoma, Geneva
 <!-- Death Overlay -->
 <div id="death-overlay">
   <div id="death-box">
-    <h2>YOU DIED</h2>
+    <h2 id="death-title">YOU DIED</h2>
     <div id="death-stats"></div>
     <button id="btn-respawn" onclick="respawn()">Play Again</button>
   </div>
@@ -886,42 +886,50 @@ function getEntitySpeed(entity) {
   return BASE_SPEED * entity.stats.spd; // tiles per second
 }
 
+function isSolidAt(wx, wy) {
+  // Tight 0.25-tile radius collision — avoids corner snagging
+  let r = 0.25;
+  let checks = [
+    [Math.floor(wx + r), Math.floor(wy + r)],
+    [Math.floor(wx - r), Math.floor(wy + r)],
+    [Math.floor(wx + r), Math.floor(wy - r)],
+    [Math.floor(wx - r), Math.floor(wy - r)],
+  ];
+  for (let [cx, cy] of checks) {
+    if (!walkable(cx, cy)) return true;
+  }
+  return false;
+}
+
 function moveEntitySmooth(entity, dx, dy, dt) {
-  if (!entity.alive) return;
+  if (!entity.alive) return false;
   let speed = getEntitySpeed(entity);
   let terrainMult = tileSpeedMult(entity.x, entity.y);
   let moveAmount = speed * terrainMult * dt;
+  if (dx !== 0 && dy !== 0) moveAmount *= 0.7071;
 
-  // Normalize diagonal movement
-  if (dx !== 0 && dy !== 0) {
-    moveAmount *= 0.7071;
+  let moved = false;
+
+  // Try full move
+  let nx = entity.x + dx * moveAmount;
+  let ny = entity.y + dy * moveAmount;
+  nx = Math.max(2, Math.min(MAP_SIZE - 3, nx));
+  ny = Math.max(2, Math.min(MAP_SIZE - 3, ny));
+
+  if (!isSolidAt(nx, ny)) {
+    entity.x = nx; entity.y = ny; return true;
   }
-
-  let newX = entity.x + dx * moveAmount;
-  let newY = entity.y + dy * moveAmount;
-
-  // Check horizontal movement (walls only)
-  let canMoveX = true;
-  if (dx !== 0) {
-    let checkX = dx > 0 ? Math.floor(newX + 0.4) : Math.ceil(newX - 0.4);
-    let checkY1 = Math.floor(entity.y);
-    let checkY2 = Math.round(entity.y);
-    if (!walkable(checkX, checkY1) || !walkable(checkX, checkY2)) canMoveX = false;
+  // Try X-only (wall slide)
+  let tx = Math.max(2, Math.min(MAP_SIZE - 3, entity.x + dx * moveAmount));
+  if (dx !== 0 && !isSolidAt(tx, entity.y)) {
+    entity.x = tx; moved = true;
   }
-
-  // Check vertical movement (walls only)
-  let canMoveY = true;
-  if (dy !== 0) {
-    let checkY = dy > 0 ? Math.floor(newY + 0.4) : Math.ceil(newY - 0.4);
-    let checkX1 = Math.floor(entity.x);
-    let checkX2 = Math.round(entity.x);
-    if (!walkable(checkX1, checkY) || !walkable(checkX2, checkY)) canMoveY = false;
+  // Try Y-only (wall slide)
+  let ty = Math.max(2, Math.min(MAP_SIZE - 3, entity.y + dy * moveAmount));
+  if (dy !== 0 && !isSolidAt(entity.x, ty)) {
+    entity.y = ty; moved = true;
   }
-
-  if (canMoveX) entity.x = Math.max(2, Math.min(MAP_SIZE - 3, entity.x + dx * moveAmount));
-  if (canMoveY) entity.y = Math.max(2, Math.min(MAP_SIZE - 3, entity.y + dy * moveAmount));
-
-  return canMoveX || canMoveY;
+  return moved;
 }
 
 function updatePlayerMovement(dt) {
@@ -1050,14 +1058,50 @@ function aiTick(entity, dt) {
     return;
   }
 
-  // Chase if visible
+  // Chase visible enemy first
   if (nearest) {
     entity.moveVX = Math.sign(nearest.x - entity.x);
     entity.moveVY = Math.sign(nearest.y - entity.y);
     return;
   }
 
-  // Move toward nearest item if none visible and has room in inventory
+  // --- Castle-seeking logic ---
+  // Find the best castle target: enemy/neutral castles first, then defend own if threatened
+  let targetCastle = null;
+  let targetCastlePriority = -1;
+
+  for (let c of castles) {
+    let d = distFloat(entity, c);
+    let priority = 0;
+
+    if (c.team !== entity.team) {
+      // Neutral or enemy castle — high priority to capture
+      priority = c.team === -1 ? 8 : 10; // enemy > neutral
+      // Closer = more urgent
+      priority += Math.max(0, 10 - d * 0.3);
+    } else {
+      // Own castle — defend if enemies nearby, otherwise skip unless no other target
+      let enemiesNear = entities.filter(e => e.alive && e.team !== entity.team && distFloat(e, c) < 4).length;
+      if (enemiesNear > 0) priority = 6 + enemiesNear;
+    }
+
+    if (priority > targetCastlePriority) {
+      targetCastlePriority = priority;
+      targetCastle = c;
+    }
+  }
+
+  if (targetCastle) {
+    // Move toward target castle entrance
+    let cdx = targetCastle.x - entity.x;
+    let cdy = targetCastle.y - entity.y;
+    let len = Math.sqrt(cdx*cdx + cdy*cdy) || 1;
+    entity.moveVX = cdx / len;
+    entity.moveVY = cdy / len;
+    return;
+  }
+
+  // Move toward visible item if inventory not full
   if (entity.inventory.length < 3) {
     let nearItem = null, nearItemDist = Infinity;
     for (let it of items) {
@@ -1071,7 +1115,7 @@ function aiTick(entity, dt) {
     }
   }
 
-  // Wander randomly (lower-INT mobs wander more erratically)
+  // Wander
   let wanderChance = 0.2 + (6 - entity.stats.int) * 0.05;
   if (Math.random() < wanderChance) {
     let dirs = [[1,0],[-1,0],[0,1],[0,-1],[1,1],[-1,-1],[1,-1],[-1,1]];
@@ -1742,6 +1786,41 @@ function drawCastleFlags() {
   }
 }
 
+function checkCastleWin() {
+  if (castles.length === 0) return;
+  let allOwned = castles.every(c => c.team >= 0);
+  if (!allOwned) return;
+  // Check if all owned by same team
+  let firstTeam = castles[0].team;
+  if (!castles.every(c => c.team === firstTeam)) return;
+  // One team owns everything!
+  const TEAM_NAMES = ['CHAOS','NATURE','ARCANE','IRON'];
+  const TEAM_BANNERS = ['🔴','🟢','🟣','🟠'];
+  let winName = TEAM_NAMES[firstTeam] || 'Unknown';
+  let winBanner = TEAM_BANNERS[firstTeam] || '🏴';
+  let isPlayerWin = player && player.team === firstTeam;
+  showVictory(winName, winBanner, isPlayerWin);
+}
+
+function showVictory(teamName, banner, isPlayerTeam) {
+  let overlay = document.getElementById('death-overlay');
+  let title = document.getElementById('death-title');
+  let stats = document.getElementById('death-stats');
+  if (title) title.textContent = isPlayerTeam
+    ? '🏆 VICTORY! ALL CASTLES CLAIMED!'
+    : banner + ' ' + teamName + ' CONQUERS ALL!';
+  let narrative = generateNarrative();
+  let finalScore = kills*10 + itemsCollected*5 + goalsCompleted*25 + Math.floor(gameTime/10);
+  if (stats) stats.innerHTML =
+    '<div style="font-size:18px;color:'+(isPlayerTeam?'#f0c040':'#ff6666')+'">'+
+    banner+' Team '+teamName+' owns all '+castles.length+' castles!</div>' +
+    '<div style="margin:8px 0">Your score: '+finalScore+'</div>' +
+    '<div style="margin-top:12px;padding:10px;background:rgba(255,220,100,0.08);border:1px solid #f0c04044;border-radius:6px;font-size:12px;color:#ddd;line-height:1.7;text-align:left;max-width:420px">'+narrative+'</div>' +
+    '<button onclick="navigator.clipboard.writeText('+JSON.stringify(narrative)+')" style="margin-top:8px;padding:6px 16px;background:#333;border:1px solid #666;color:#fff;border-radius:4px;cursor:pointer">📋 Copy Chronicle</button>';
+  overlay.style.display = 'flex';
+  isDead = true;
+}
+
 function generateNarrative() {
   if (!player) return 'No game data.';
   const TEAM_NAMES = ['Chaos','Nature','Arcane','Iron'];
@@ -2001,11 +2080,12 @@ function gameTick() {
       let tname = castle.team === player.team ? 'YOUR TEAM' : teamNames[castle.team]||'Unknown';
       addLog('🏰 Castle #'+(castles.indexOf(castle)+1)+' captured by '+tname+'!', 'log-world');
       gameEvents.push({time:gameTime,type:'castle_captured',detail:'Castle '+(castles.indexOf(castle)+1)+' captured by '+tname});
-      // Spawn unit
-      let spawner = occupants[0];
-      let newAI = createEntity(randomName(), false, undefined, castle.team);
+      // Spawn unit at castle
+      let newAI = createEntity(randomName(castle.team), false, undefined, castle.team);
       newAI.x = castle.x + (Math.random()-0.5)*2; newAI.y = castle.y + (Math.random()-0.5)*2;
       entities.push(newAI);
+      // Check win condition: one team owns ALL castles
+      checkCastleWin();
     }
     // Periodic spawn from captured castle
     castle.spawnTimer = (castle.spawnTimer||0) + 0.5;
@@ -2218,6 +2298,7 @@ function createCharacter() {
 // --- Death ---
 function showDeath() {
   isDead = true;
+  document.getElementById('death-title').textContent = '☠️ YOU DIED';
   document.getElementById('death-overlay').style.display = 'flex';
   let finalScore = kills * 10 + itemsCollected * 5 + goalsCompleted * 25 + Math.floor(gameTime / 10);
   let narrative = generateNarrative();
