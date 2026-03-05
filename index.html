@@ -749,6 +749,24 @@ function performAttack(attacker, defender) {
   let doubleDmg = attacker.abilityActive.berserkerStrike || false;
   if (doubleDmg) attacker.abilityActive.berserkerStrike = false;
 
+  // Momentum bonus: +1 atk for each previous consecutive hit on this target
+  if (!attacker.momentum) attacker.momentum = {};
+  let momentumKey = defender.id;
+  let momentumBonus = attacker.momentum[momentumKey] || 0;
+  atkStat += momentumBonus;
+
+  // Cover bonus: +1 def if defender is on/adjacent to forest tile
+  let coverBonus = 0;
+  let dx = Math.floor(defender.x), dy = Math.floor(defender.y);
+  let coverTiles = [[0,0],[1,0],[-1,0],[0,1],[0,-1]];
+  for (let [cx,cy] of coverTiles) {
+    let t = tiles[dy+cy] && tiles[dy+cy][dx+cx];
+    if (t === 'forest') { coverBonus = 1; break; }
+  }
+  // Also +1 cover inside castle walls (dungeon tile)
+  if (tiles[dy] && tiles[dy][dx] === 'dungeon') coverBonus = Math.max(coverBonus, 1);
+  defStat += coverBonus;
+
   let aRoll = d6(), dRoll = d6();
   let aTotal = atkStat + aRoll, dTotal = defStat + dRoll;
   let hit = aTotal > dTotal;
@@ -771,17 +789,27 @@ function performAttack(attacker, defender) {
   if (doubleDmg && hit) damage *= 2;
 
   playAttack(attacker);
+  // Build momentum log suffix
+  let bonusLog = [];
+  if (momentumBonus > 0) bonusLog.push('momentum+'+momentumBonus);
+  if (coverBonus > 0) bonusLog.push('cover+'+coverBonus);
+  let bonusSuffix = bonusLog.length ? ' ['+bonusLog.join(',')+']' : '';
+
   if (hit && damage > 0) {
     defender.hp -= damage;
     defender.lastAttacker = attacker.id;
+    // Accumulate momentum (max +5)
+    attacker.momentum[momentumKey] = Math.min(5, (attacker.momentum[momentumKey] || 0) + 1);
     playHit();
-    addLog(attacker.name+' hits '+defender.name+'! ('+atkStat+'+'+aRoll+'='+aTotal+' vs '+defStat+'+'+dRoll+'='+dTotal+') DMG:'+damage, 'log-damage');
-    spawnFloatingText(defender.x, defender.y, '-'+damage, '#ff4444');
+    addLog(attacker.name+' hits '+defender.name+'!'+bonusSuffix+' ('+atkStat+'+'+aRoll+'='+aTotal+' vs '+defStat+'+'+dRoll+'='+dTotal+') DMG:'+damage, 'log-damage');
+    spawnFloatingText(defender.x, defender.y, '-'+damage+(coverBonus?' 🌲':''), '#ff4444');
     if (defender.hp <= 0) {
       defender.hp = 0;
       defender.alive = false;
       defender.deathAnim = 1;
       dropInventory(defender);
+      // Clear momentum all attackers had on this defender
+      for (let e of [...entities, player]) { if (e && e.momentum) delete e.momentum[defender.id]; }
       playDeathVariant();
       gameEvents.push({time:gameTime,type:'kill',detail:attacker.name+' slew '+defender.name});
       addLog(defender.name+' slain by '+attacker.name+'!', 'log-damage');
@@ -799,7 +827,9 @@ function performAttack(attacker, defender) {
       if (defender.isPlayer && defender.id === playerId) showDeath();
     }
   } else {
-    addLog(attacker.name+' misses '+defender.name+'. ('+atkStat+'+'+aRoll+'='+aTotal+' vs '+defStat+'+'+dRoll+'='+dTotal+')', 'log-info');
+    // Miss resets momentum on this target
+    if (attacker.momentum) attacker.momentum[momentumKey] = 0;
+    addLog(attacker.name+' misses '+defender.name+'.'+bonusSuffix+' ('+atkStat+'+'+aRoll+'='+aTotal+' vs '+defStat+'+'+dRoll+'='+dTotal+')'+(coverBonus?' 🌲cover':''), 'log-info');
   }
 }
 
