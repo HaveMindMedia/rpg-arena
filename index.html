@@ -240,14 +240,20 @@ const MOB_EMOJI = [
   '🧙','🧝','🧞','🧜','🧚','🪡','🎪','🃏','🎭','🗺️','⚗️','🔬','🧬','🫧','🌙'
 ];
 const ITEM_DEFS = {
-  atk: { names:['Iron Sword','Battle Axe','War Hammer'], color:'#e04040' },
-  def: { names:['Shield','Chain Mail','Tower Shield'], color:'#4080e0' },
-  spd: { names:['Swift Boots','Wind Cloak','Haste Ring'], color:'#e0c040' },
-  ene: { names:['Life Crystal','Health Potion','Vitality Gem'], color:'#40c040' },
-  int: { names:['Tome of Knowledge','Mystic Orb','Sage Staff'], color:'#a040e0' },
-  cmd: { names:['Warlord Banner','Horn of Command','General Badge'], color:'#e08020' }
+  atk: { names:['Iron Sword','Battle Axe','War Hammer','Serrated Dagger','Bone Spear'], color:'#e04040', emoji:'⚔️', label:'Attack' },
+  def: { names:['Shield','Chain Mail','Tower Shield','Dragon Scale','Iron Helm'], color:'#4080e0', emoji:'🛡️', label:'Defense' },
+  spd: { names:['Swift Boots','Wind Cloak','Haste Ring','Shadow Greaves','Storm Sandals'], color:'#e0c040', emoji:'👟', label:'Speed' },
+  ene: { names:['Life Crystal','Health Potion','Vitality Gem','Mana Root','Soul Shard'], color:'#40c040', emoji:'💎', label:'Energy' },
+  int: { names:['Tome of Knowledge','Mystic Orb','Sage Staff','Crystal Eye','Mind Stone'], color:'#a040e0', emoji:'📖', label:'Intelligence' },
+  cmd: { names:['Warlord Banner','Horn of Command','General Badge','Rally Stone','War Drum'], color:'#e08020', emoji:'📯', label:'Command' }
 };
-const BASE_SPEED = 1.5; // tiles/second at speed 1
+const FOOD_DEFS = [
+  {name:'Apple',emoji:'🍎'},{name:'Roast Meat',emoji:'🍖'},{name:'Bread Loaf',emoji:'🍞'},
+  {name:'Aged Cheese',emoji:'🧀'},{name:'Wild Grapes',emoji:'🍇'},{name:'Mushroom',emoji:'🍄'},
+  {name:'Honey Jar',emoji:'🍯'},{name:'Corn Cob',emoji:'🌽'},{name:'Cooked Fish',emoji:'🐟'},
+  {name:'Berry Bundle',emoji:'🫐'}
+];
+const BASE_SPEED = 0.9; // tiles/second at speed 1 (slower movement)
 
 // --- State ---
 let playerId = crypto.randomUUID();
@@ -275,6 +281,8 @@ let channel = null;
 let aiSpawnTimer = 0;
 let worldUpdateTimer = 0;
 let isDead = false;
+let spectatorMode = false;
+let victoryShown = false;
 let inventoryLog = [];
 let healTimer = 0; // healing counter: increments each gameTick, heals at 6
 let playerTeam = 0;
@@ -602,9 +610,19 @@ function createEntity(name, isPlayer, id, teamId) {
     // Flying
     flying: false,
     flyPhase: Math.random() * Math.PI * 2,
+    // Extract leading emoji from name for rendering
+    emoji: (name.match(/^(\p{Emoji_Presentation}|\p{Extended_Pictographic})\s*/u) || [''])[0].trim() || (isPlayer ? (CLASS_EMOJI[getClass(stats)] || '🧑') : MOB_EMOJI[Math.floor(Math.random()*MOB_EMOJI.length)]),
     // Combat tracking
     lastAttackMs: 0,
-    combatStaleTimer: 0
+    combatStaleTimer: 0,
+    // Ranged energy system
+    energy: stats.ene,    // current energy points
+    maxEnergy: stats.ene, // max = ENE stat
+    energyRechargeTimer: 0,
+    // AI behavioral state
+    aiState: 'battle',    // 'battle' | 'retreat' | 'recharge'
+    retreatTarget: null,  // castle to recharge at
+    lastKilledBy: null    // name of entity that killed this one
   };
 }
 
@@ -628,23 +646,21 @@ function spawnItem(x, y) {
   if (x === undefined) {
     do { x = 2+Math.floor(Math.random()*(MAP_SIZE-4)); y = 2+Math.floor(Math.random()*(MAP_SIZE-4)); } while (!walkable(x, y));
   }
-  items.push({ x, y, stat: statKey, name: itemName, color: def.color, bobOffset: Math.random() * Math.PI * 2 });
+  items.push({ x, y, stat: statKey, name: itemName, emoji: def.emoji, color: def.color, label: def.label, bobOffset: Math.random() * Math.PI * 2 });
 }
 
 function scatterItems(n) { for (let i = 0; i < n; i++) spawnItem(); }
 
 function spawnFoodItems(n) {
-  const FOOD = ['🍎 Apple','🍖 Meat','🍞 Bread','🧀 Cheese','🍇 Grapes'];
   for (let i = 0; i < n; i++) {
-    // Find a forest-adjacent tile
     let fx, fy, tries = 0;
     do {
       fx = 2 + Math.floor(Math.random()*(MAP_SIZE-4));
       fy = 2 + Math.floor(Math.random()*(MAP_SIZE-4));
       tries++;
     } while (tries < 30 && !(tiles[fy][fx]==='forest' || (tiles[fy][fx]==='grass' && [[-1,0],[1,0],[0,-1],[0,1]].some(([dx,dy])=>tiles[fy+dy]&&tiles[fy+dy][fx+dx]==='forest'))));
-    let name = FOOD[Math.floor(Math.random()*FOOD.length)];
-    items.push({ x: fx, y: fy, stat: null, name, color:'#ff9966', isFood: true, bobOffset: Math.random()*Math.PI*2 });
+    let fd = FOOD_DEFS[Math.floor(Math.random()*FOOD_DEFS.length)];
+    items.push({ x: fx, y: fy, stat: null, name: fd.name, emoji: fd.emoji, color:'#ff9966', isFood: true, bobOffset: Math.random()*Math.PI*2 });
   }
 }
 
@@ -662,15 +678,20 @@ function stampCastle(cx, cy) {
   tiles[cy+2][cx+1] = 'dungeon';
 }
 
+// Corner positions — true corners of the map (3 tiles in from edge so castle fits)
+function cornerPositions() {
+  let m = MAP_SIZE - 4;
+  return [
+    {x:3,  y:3,    team:0},
+    {x:m,  y:3,    team:1},
+    {x:3,  y:m,    team:2},
+    {x:m,  y:m,    team:3}
+  ];
+}
+
 function generateCastles() {
   castles = [];
-  // Corner castles pre-assigned to each faction
-  const corners = [
-    {x:8,  y:8,           team:0},
-    {x:MAP_SIZE-9, y:8,   team:1},
-    {x:8,  y:MAP_SIZE-9,  team:2},
-    {x:MAP_SIZE-9, y:MAP_SIZE-9, team:3}
-  ];
+  const corners = cornerPositions();
   // Neutral central castle
   const center = {x:Math.floor(MAP_SIZE/2), y:Math.floor(MAP_SIZE/2), team:-1};
 
@@ -682,12 +703,7 @@ function generateCastles() {
 }
 
 function spawnStartingArmies() {
-  const corners = [
-    {x:8,  y:8,           team:0},
-    {x:MAP_SIZE-9, y:8,   team:1},
-    {x:8,  y:MAP_SIZE-9,  team:2},
-    {x:MAP_SIZE-9, y:MAP_SIZE-9, team:3}
-  ];
+  const corners = cornerPositions();
   for (let corner of corners) {
     for (let i = 0; i < 4; i++) {
       let mob = createEntity(randomName(corner.team), false, undefined, corner.team);
@@ -833,7 +849,10 @@ function performAttack(attacker, defender) {
         score += 5;
         for (let g of goals) if (g.type === 'defeat') g.progress++;
       }
-      if (defender.isPlayer && defender.id === playerId) showDeath();
+      if (defender.isPlayer && defender.id === playerId) {
+        player.lastKilledBy = attacker.displayName || attacker.name;
+        showDeath();
+      }
     }
   } else {
     // Miss resets momentum on this target
@@ -974,11 +993,13 @@ function updatePlayerMovement(dt) {
           player.stats[item.stat] = Math.min(9, player.stats[item.stat] + boost);
           if (item.stat === 'ene') { player.maxHp = 10 + player.stats.ene * 2; player.hp = Math.min(player.hp + boost*2, player.maxHp); }
           if (item.stat === 'int') player.specialMaxCooldown = Math.max(3, 10 - player.stats.int);
-          addLog('Picked up '+(item.golden?'✨':'')+ item.name+'! (+'+boost+' '+STAT_LABELS[item.stat]+')', 'log-item');
+          let emojiStr = item.emoji || '📦';
+          addLog((item.golden?'✨ ':'')+ emojiStr +' '+item.name+': +'+boost+' '+STAT_LABELS[item.stat], 'log-item');
+          spawnFloatingText(player.x, player.y, emojiStr+' +'+boost+' '+STAT_LABELS[item.stat], item.color || '#fff');
         }
         playPickup();
         itemsCollected++;
-        inventoryLog.push({ name: item.name, color: item.color });
+        inventoryLog.push({ name: item.name, emoji: item.emoji, color: item.color, stat: item.stat, label: item.label });
         for (let g of goals) if (g.type === 'collect') g.progress++;
         items.splice(i, 1);
         break;
@@ -1008,129 +1029,224 @@ function updatePlayerMovement(dt) {
 }
 
 // --- AI Behavior (smooth) ---
+function aiRangedAttack(entity, target) {
+  if (entity.energy <= 0) return false;
+  if (!entity.lastRangedMs) entity.lastRangedMs = 0;
+  let rangedCooldownMs = Math.max(1500, 4000 - entity.stats.cmd * 400);
+  if (Date.now() - entity.lastRangedMs < rangedCooldownMs) return false;
+  let range = 2 + entity.stats.cmd * 1.2;
+  if (distFloat(entity, target) > range) return false;
+  entity.energy = Math.max(0, entity.energy - 1);
+  entity.lastRangedMs = Date.now();
+  // Fire projectile
+  let angle = Math.atan2(target.y - entity.y, target.x - entity.x);
+  projectiles.push({
+    x: entity.x, y: entity.y,
+    vx: Math.cos(angle) * 8, vy: Math.sin(angle) * 8,
+    owner: entity, target: target,
+    life: 1.5, color: TEAM_COLORS[entity.team] || '#ffaa00'
+  });
+  return true;
+}
+
 function aiTick(entity, dt) {
   if (!entity.alive || entity.isPlayer) return;
   entity.aiTimer -= dt * 1000;
   if (entity.aiTimer > 0) return;
-  entity.aiTimer = 300 + Math.random() * 200; // retarget every 300-500ms
+  entity.aiTimer = 250 + Math.random() * 200;
 
   entity.combatTimer -= dt * 1000;
   if (entity.combatTimer < 0) entity.combatTimer = 0;
 
   let hpPct = entity.hp / entity.maxHp;
+  let visionRange = 2 + entity.stats.int * 1.67;
 
-  // Find all potential targets (different team only)
+  // ── RECHARGE STATE: inside own castle, waiting for full energy ──
+  if (entity.aiState === 'recharge') {
+    let ownCastle = castles.find(c => c.team === entity.team && distFloat(entity, c) < 2);
+    if (ownCastle) {
+      // Stay put — energyRechargeTimer handled in gameTick
+      entity.moveVX = 0; entity.moveVY = 0;
+      if (entity.energy >= entity.maxEnergy && entity.hp >= entity.maxHp * 0.5) {
+        entity.aiState = 'battle';
+        entity.retreatTarget = null;
+      }
+      return;
+    } else {
+      // Head to own castle
+      let homeCastle = castles.filter(c => c.team === entity.team)
+        .sort((a,b) => distFloat(entity,a) - distFloat(entity,b))[0];
+      if (homeCastle) {
+        let cdx = homeCastle.x - entity.x, cdy = homeCastle.y - entity.y;
+        let len = Math.sqrt(cdx*cdx+cdy*cdy)||1;
+        entity.moveVX = cdx/len; entity.moveVY = cdy/len;
+        return;
+      }
+    }
+  }
+
+  // ── RETREAT STATE: low HP or out of energy — find food or own castle ──
+  if (entity.aiState === 'retreat' || (hpPct < 0.3 && entity.aiState === 'battle')) {
+    entity.aiState = 'retreat';
+    // Look for nearby food first (within vision)
+    let nearFood = items.filter(it => it.isFood && distFloat(entity, it) < visionRange)
+      .sort((a,b) => distFloat(entity,a) - distFloat(entity,b))[0];
+    if (nearFood) {
+      let fx = nearFood.x - entity.x, fy = nearFood.y - entity.y;
+      let len = Math.sqrt(fx*fx+fy*fy)||1;
+      entity.moveVX = fx/len; entity.moveVY = fy/len;
+      // If hp recovered above 50% and energy ok → back to battle
+      if (hpPct >= 0.5 && entity.energy > 0) { entity.aiState = 'battle'; }
+      return;
+    }
+    // No food visible — head to own castle to recharge energy
+    let homeCastle = castles.filter(c => c.team === entity.team)
+      .sort((a,b) => distFloat(entity,a) - distFloat(entity,b))[0];
+    if (homeCastle) {
+      let cdx = homeCastle.x - entity.x, cdy = homeCastle.y - entity.y;
+      let len = Math.sqrt(cdx*cdx+cdy*cdy)||1;
+      entity.moveVX = cdx/len; entity.moveVY = cdy/len;
+      if (distFloat(entity, homeCastle) < 2) { entity.aiState = 'recharge'; }
+      return;
+    }
+    // Flee from nearest enemy
+    let fleeTarget = [...entities, player].filter(e => e && e.alive && e.team !== entity.team && distFloat(entity,e) < visionRange)
+      .sort((a,b) => distFloat(entity,a) - distFloat(entity,b))[0];
+    if (fleeTarget) {
+      entity.moveVX = Math.sign(entity.x - fleeTarget.x) || 1;
+      entity.moveVY = Math.sign(entity.y - fleeTarget.y) || 1;
+    }
+    if (hpPct >= 0.5 && entity.energy > 0) entity.aiState = 'battle';
+    return;
+  }
+
+  // ── BATTLE STATE ──
+  // Find visible enemies
   let allTargets = entities.filter(e => e.alive && e.id !== entity.id && e.team !== entity.team);
-  // Add remote players from different teams
+  if (player && player.alive && player.team !== entity.team) allTargets.push(player);
   for (let rp of Object.values(remotePlayers)) {
     if (rp.alive && rp.team !== entity.team) allTargets.push(rp);
   }
+  // Filter to vision range and sort by HP (prefer weakest — smarter targets)
+  let visibleTargets = allTargets
+    .filter(t => distFloat(entity, t) <= visionRange)
+    .sort((a,b) => {
+      // INT-weighted: high INT prefers weakest enemy, low INT goes nearest
+      let intWeight = entity.stats.int / 6;
+      let aDanger = (a.hp / a.maxHp) * intWeight + (distFloat(entity,a) / visionRange) * (1-intWeight);
+      let bDanger = (b.hp / b.maxHp) * intWeight + (distFloat(entity,b) / visionRange) * (1-intWeight);
+      return aDanger - bDanger;
+    });
 
-  // Intelligence = vision range (INT 1 = 2 tiles, INT 6 = 12 tiles)
-  let visionRange = 2 + entity.stats.int * 1.67;
+  let nearest = visibleTargets[0] || null;
+  let nearDist = nearest ? distFloat(entity, nearest) : Infinity;
 
-  // Only consider targets within vision range
-  let nearest = null, nearDist = Infinity;
-  for (let t of allTargets) {
-    let d = distFloat(entity, t);
-    if (d <= visionRange && d < nearDist) { nearDist = d; nearest = t; }
-  }
-  // Also add local player if in range
-  if (player && player.alive && player.team !== entity.team) {
-    let dp = distFloat(entity, player);
-    if (dp <= visionRange && dp < nearDist) { nearDist = dp; nearest = player; }
-  }
+  entity.moveVX = 0; entity.moveVY = 0;
 
-  // Set movement direction based on AI decision
-  entity.moveVX = 0;
-  entity.moveVY = 0;
+  // Use special ability if ready
+  if (entity.specialCooldown <= 0 && nearest && nearDist <= 3) useSpecial(entity);
 
-  // Flee if low HP and can see an enemy
-  if (hpPct < 0.2 && nearest) {
-    entity.moveVX = Math.sign(entity.x - nearest.x) || 1;
-    entity.moveVY = Math.sign(entity.y - nearest.y) || 1;
-    return;
-  }
-
-  // Use special if available and enemy nearby
-  if (entity.specialCooldown <= 0 && nearest && nearDist <= 3) {
-    useSpecial(entity);
-  }
-
-  // Attack if adjacent
-  if (nearest && nearDist <= 1.2 && entity.combatTimer <= 0) {
-    let realTarget = entities.find(e => e.id === nearest.id) || (nearest === player ? player : null);
-    if (realTarget && realTarget.alive) {
-      performAttack(entity, realTarget);
-      entity.combatTimer = Math.max(500, 2000 - entity.stats.spd * 150);
+  // Defend own castle if threatened — stay inside and fight
+  let myCastle = castles.find(c => c.team === entity.team && distFloat(entity, c) < 2.5);
+  if (myCastle) {
+    let threatCount = allTargets.filter(t => distFloat(t, myCastle) < 3).length;
+    if (threatCount > 0) {
+      // Defend: attack any enemy in castle range
+      let intruder = allTargets.filter(t => distFloat(t, myCastle) < 3)[0];
+      if (intruder) {
+        if (entity.energy > 0 && distFloat(entity, intruder) <= 2 + entity.stats.cmd * 1.2) {
+          aiRangedAttack(entity, intruder);
+          // Fire-and-stay (don't chase)
+          return;
+        }
+        if (distFloat(entity, intruder) <= 1.3 && entity.combatTimer <= 0) {
+          let realT = entities.find(e=>e.id===intruder.id)||(intruder===player?player:null);
+          if (realT) { performAttack(entity, realT); entity.combatTimer = Math.max(500,2000-entity.stats.spd*150); }
+        }
+      }
+      entity.moveVX = 0; entity.moveVY = 0;
+      return;
     }
-    return;
   }
 
-  // Chase visible enemy first
   if (nearest) {
+    // High-INT mob: try ranged fire-and-retreat if outmatched (enemy has more HP)
+    let outmatched = nearest.hp > entity.hp * 1.3 && entity.stats.int >= 4;
+    if (entity.energy > 0 && nearDist <= 2 + entity.stats.cmd * 1.2) {
+      let fired = aiRangedAttack(entity, nearest);
+      if (fired && outmatched) {
+        // Retreat a step after firing
+        entity.moveVX = Math.sign(entity.x - nearest.x) || 1;
+        entity.moveVY = Math.sign(entity.y - nearest.y) || 1;
+        return;
+      }
+      if (fired) return;
+    }
+    // Melee: gang up — if a teammate is already fighting this target, join
+    let allyAlreadyFighting = entities.filter(e =>
+      e.alive && e.team === entity.team && e.id !== entity.id &&
+      e.lastAttackMs && Date.now()-e.lastAttackMs < 2000 &&
+      distFloat(e, nearest) < 1.5
+    ).length > 0;
+    if (allyAlreadyFighting || nearDist <= 1.3) {
+      if (nearDist <= 1.3 && entity.combatTimer <= 0) {
+        let realT = entities.find(e=>e.id===nearest.id)||(nearest===player?player:null);
+        if (realT) { performAttack(entity, realT); entity.combatTimer = Math.max(500,2000-entity.stats.spd*150); }
+      } else {
+        entity.moveVX = Math.sign(nearest.x - entity.x);
+        entity.moveVY = Math.sign(nearest.y - entity.y);
+      }
+      return;
+    }
+    // Standard chase
     entity.moveVX = Math.sign(nearest.x - entity.x);
     entity.moveVY = Math.sign(nearest.y - entity.y);
     return;
   }
 
-  // --- Castle-seeking logic ---
-  // Find the best castle target: enemy/neutral castles first, then defend own if threatened
-  let targetCastle = null;
-  let targetCastlePriority = -1;
-
-  for (let c of castles) {
-    let d = distFloat(entity, c);
-    let priority = 0;
-
-    if (c.team !== entity.team) {
-      // Neutral or enemy castle — high priority to capture
-      priority = c.team === -1 ? 8 : 10; // enemy > neutral
-      // Closer = more urgent
-      priority += Math.max(0, 10 - d * 0.3);
-    } else {
-      // Own castle — defend if enemies nearby, otherwise skip unless no other target
-      let enemiesNear = entities.filter(e => e.alive && e.team !== entity.team && distFloat(e, c) < 4).length;
-      if (enemiesNear > 0) priority = 6 + enemiesNear;
-    }
-
-    if (priority > targetCastlePriority) {
-      targetCastlePriority = priority;
-      targetCastle = c;
-    }
-  }
-
-  if (targetCastle) {
-    // Move toward target castle entrance
-    let cdx = targetCastle.x - entity.x;
-    let cdy = targetCastle.y - entity.y;
-    let len = Math.sqrt(cdx*cdx + cdy*cdy) || 1;
-    entity.moveVX = cdx / len;
-    entity.moveVY = cdy / len;
+  // No enemies visible — seek castle objective
+  // Defend own castle first if enemy nearby
+  let ownCastles = castles.filter(c => c.team === entity.team);
+  let threatenedOwn = ownCastles.find(c => {
+    let enemies = allTargets.filter(t => distFloat(t,c) < 5);
+    return enemies.length > 0;
+  });
+  if (threatenedOwn) {
+    let cdx = threatenedOwn.x - entity.x, cdy = threatenedOwn.y - entity.y;
+    let len = Math.sqrt(cdx*cdx+cdy*cdy)||1;
+    entity.moveVX = cdx/len; entity.moveVY = cdy/len;
     return;
   }
 
-  // Move toward visible item if inventory not full
+  // Seek enemy/neutral castle
+  let targetCastle = castles
+    .filter(c => c.team !== entity.team)
+    .sort((a,b) => distFloat(entity,a) - distFloat(entity,b))[0];
+  if (targetCastle) {
+    let cdx = targetCastle.x - entity.x, cdy = targetCastle.y - entity.y;
+    let len = Math.sqrt(cdx*cdx+cdy*cdy)||1;
+    entity.moveVX = cdx/len; entity.moveVY = cdy/len;
+    return;
+  }
+
+  // Seek items within vision
   if (entity.inventory.length < 3) {
-    let nearItem = null, nearItemDist = Infinity;
-    for (let it of items) {
-      let d = distFloat(entity, it);
-      if (d < nearItemDist && d < visionRange) { nearItemDist = d; nearItem = it; }
-    }
+    let nearItem = items.filter(it => distFloat(entity,it) < visionRange)
+      .sort((a,b) => distFloat(entity,a)-distFloat(entity,b))[0];
     if (nearItem) {
-      entity.moveVX = Math.sign(nearItem.x - entity.x);
-      entity.moveVY = Math.sign(nearItem.y - entity.y);
+      let ix = nearItem.x-entity.x, iy = nearItem.y-entity.y;
+      let len = Math.sqrt(ix*ix+iy*iy)||1;
+      entity.moveVX = ix/len; entity.moveVY = iy/len;
       return;
     }
   }
 
   // Wander
-  let wanderChance = 0.2 + (6 - entity.stats.int) * 0.05;
+  let wanderChance = 0.15 + (6 - entity.stats.int) * 0.05;
   if (Math.random() < wanderChance) {
     let dirs = [[1,0],[-1,0],[0,1],[0,-1],[1,1],[-1,-1],[1,-1],[-1,1]];
     let d = dirs[Math.floor(Math.random()*dirs.length)];
-    entity.moveVX = d[0];
-    entity.moveVY = d[1];
+    entity.moveVX = d[0]; entity.moveVY = d[1];
   }
 }
 
@@ -1198,6 +1314,10 @@ function attemptRecruit() {
 // Range = Command stat (1-6 tiles). Damage = ATK + d6 vs target DEF + d6.
 function attemptRangedAttack() {
   if (!player || !player.alive || rangedCooldown > 0) return;
+  if (player.energy <= 0) {
+    addLog('⚡ No energy! Rest in your castle to recharge.', 'log-info');
+    return;
+  }
 
   let range = player.stats.cmd; // Command = range in tiles
   // Find nearest alive enemy (different team) within range
@@ -1230,6 +1350,7 @@ function attemptRangedAttack() {
   });
 
   playAttack();
+  player.energy = Math.max(0, player.energy - 1); // expend 1 ENE
   rangedCooldown = Math.max(1, 8 - player.stats.cmd); // faster cooldown with higher CMD
   addLog('🏹 Ranged shot at ' + target.name + '! ATK:' + atkRoll + ' vs DEF:' + defRoll, 'log-damage');
 }
@@ -1348,7 +1469,7 @@ function drawTile(x, y) {
     case 'forest':
       topColor = '#5aad54'; leftColor = '#3d7a39'; rightColor = '#2d5a29'; break;
     case 'wall':
-      topColor = '#808080'; leftColor = '#606060'; rightColor = '#505050'; depth = 20; break;
+      topColor = '#909090'; leftColor = '#555555'; rightColor = '#404040'; depth = 32; break;
     case 'dungeon':
       topColor = '#303030'; leftColor = '#202020'; rightColor = '#181818'; depth = 6; break;
     case 'sand':
@@ -1530,27 +1651,23 @@ function drawItem(item) {
   if (sx < -50 || sx > canvas.width + 50 || sy < -50 || sy > canvas.height + 50) return;
 
   let bob = Math.sin(animTime * 2 + item.bobOffset) * 4;
+  let emoji = item.emoji || (item.isFood ? '🍎' : '💎');
 
-  // Glow
-  let grad = ctx.createRadialGradient(sx, sy - 14 + bob, 2, sx, sy - 14 + bob, 16);
-  grad.addColorStop(0, item.color + '66');
-  grad.addColorStop(1, item.color + '00');
-  ctx.fillStyle = grad;
-  ctx.fillRect(sx - 16, sy - 30 + bob, 32, 32);
-
-  // Diamond
+  // Glow ring
+  ctx.save();
+  ctx.globalAlpha = 0.4 + Math.sin(animTime * 3 + item.bobOffset) * 0.15;
   ctx.fillStyle = item.color;
   ctx.beginPath();
-  ctx.moveTo(sx, sy - 22 + bob); ctx.lineTo(sx + 7, sy - 14 + bob);
-  ctx.lineTo(sx, sy - 6 + bob); ctx.lineTo(sx - 7, sy - 14 + bob);
-  ctx.closePath(); ctx.fill();
+  ctx.ellipse(sx, sy - 4, 12, 5, 0, 0, Math.PI*2);
+  ctx.fill();
+  ctx.globalAlpha = 1;
 
-  // Highlight
-  ctx.fillStyle = 'rgba(255,255,255,0.4)';
-  ctx.beginPath();
-  ctx.moveTo(sx, sy - 22 + bob); ctx.lineTo(sx + 4, sy - 16 + bob);
-  ctx.lineTo(sx, sy - 14 + bob); ctx.lineTo(sx - 4, sy - 16 + bob);
-  ctx.closePath(); ctx.fill();
+  // Emoji
+  ctx.font = '20px serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(emoji, sx, sy - 14 + bob);
+  ctx.restore();
 }
 
 function drawEntity(entity) {
@@ -1566,29 +1683,27 @@ function drawEntity(entity) {
 
   ctx.globalAlpha = alpha;
 
-  let bw = 14 * scale, bh = 22 * scale;
-  let by = sy - bh - 2;
+  let fontSize = Math.round(26 * scale);
+  let by = sy - fontSize * 0.5;
 
   // Shadow
-  ctx.fillStyle = 'rgba(0,0,0,0.25)';
-  ctx.beginPath(); ctx.ellipse(sx, sy + 2, 12 * scale, 5 * scale, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = 'rgba(0,0,0,0.3)';
+  ctx.beginPath(); ctx.ellipse(sx, sy + 2, 14 * scale, 5 * scale, 0, 0, Math.PI * 2); ctx.fill();
 
-  // Body
-  ctx.fillStyle = entity.color;
-  ctx.fillRect(sx - bw/2, by, bw, bh);
+  // Team color dot (ground indicator)
+  let teamCol = TEAM_COLORS[entity.team] || '#aaaaaa';
+  ctx.fillStyle = teamCol;
+  ctx.globalAlpha = alpha * 0.8;
+  ctx.beginPath(); ctx.ellipse(sx, sy + 1, 10 * scale, 4 * scale, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.globalAlpha = alpha;
 
-  // Lighter top portion
-  ctx.fillStyle = 'rgba(255,255,255,0.15)';
-  ctx.fillRect(sx - bw/2, by, bw, bh * 0.3);
-
-  // Head
-  ctx.fillStyle = '#f5d0a0';
-  ctx.beginPath(); ctx.arc(sx, by - 4 * scale, 6 * scale, 0, Math.PI * 2); ctx.fill();
-
-  // Eyes
-  ctx.fillStyle = '#222';
-  ctx.fillRect(sx - 3 * scale, by - 5 * scale, 2 * scale, 2 * scale);
-  ctx.fillRect(sx + 1 * scale, by - 5 * scale, 2 * scale, 2 * scale);
+  // Mob emoji
+  let mobEmoji = entity.emoji || '👤';
+  ctx.save();
+  ctx.font = fontSize + 'px serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'bottom';
+  ctx.fillText(mobEmoji, sx, sy - 2);
 
   if (entity.alive) {
     let barW = 30, barH = 4;
@@ -1641,8 +1756,22 @@ function drawEntity(entity) {
       ctx.fillStyle = 'rgba(255,60,60,0.2)';
       ctx.beginPath(); ctx.arc(sx, sy - 10, 16 * scale, 0, Math.PI * 2); ctx.fill();
     }
+    // Retreat indicator
+    if (entity.aiState === 'retreat') {
+      ctx.fillStyle = '#ffaa00';
+      ctx.font = 'bold 9px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('↩ RUN', sx, by - 26 * scale);
+    }
+    if (entity.aiState === 'recharge') {
+      ctx.fillStyle = '#44aaff';
+      ctx.font = 'bold 9px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('⚡ CHARGE', sx, by - 26 * scale);
+    }
   }
 
+  ctx.restore();
   ctx.globalAlpha = 1;
 }
 
@@ -1719,8 +1848,13 @@ function render(timestamp) {
     }
   }
 
-  // Camera follow player
-  if (player) {
+  // Camera follow player (or spectator overview)
+  if (spectatorMode) {
+    // Pan slowly across the whole map
+    let midIso = isoProject(MAP_SIZE/2, MAP_SIZE/2);
+    camera.x += (midIso.sx - camera.x) * Math.min(1, dt * 0.5);
+    camera.y += (midIso.sy - camera.y) * Math.min(1, dt * 0.5);
+  } else if (player) {
     let pp = isoProject(player.renderX || player.x, player.renderY || player.y);
     camera.x += (pp.sx - camera.x) * Math.min(1, dt * 5);
     camera.y += (pp.sy - camera.y) * Math.min(1, dt * 5);
@@ -1796,38 +1930,52 @@ function drawCastleFlags() {
 }
 
 function checkCastleWin() {
-  if (castles.length === 0) return;
-  let allOwned = castles.every(c => c.team >= 0);
-  if (!allOwned) return;
-  // Check if all owned by same team
-  let firstTeam = castles[0].team;
-  if (!castles.every(c => c.team === firstTeam)) return;
-  // One team owns everything!
-  const TEAM_NAMES = ['CHAOS','NATURE','ARCANE','IRON'];
-  const TEAM_BANNERS = ['🔴','🟢','🟣','🟠'];
-  let winName = TEAM_NAMES[firstTeam] || 'Unknown';
-  let winBanner = TEAM_BANNERS[firstTeam] || '🏴';
-  let isPlayerWin = player && player.team === firstTeam;
-  showVictory(winName, winBanner, isPlayerWin);
+  // Kept for future use — victory is now last-team-standing
 }
 
-function showVictory(teamName, banner, isPlayerTeam) {
+function checkLastTeamStanding() {
+  if (victoryShown) return;
+  // Count alive mobs per team (including player)
+  let alive = [...entities];
+  if (player && player.alive) alive.push(player);
+  let teamAlive = {};
+  for (let e of alive) {
+    if (!e.alive) continue;
+    let t = e.team;
+    if (t === undefined || t < 0) continue;
+    teamAlive[t] = (teamAlive[t]||0) + 1;
+  }
+  let teamsLeft = Object.keys(teamAlive).map(Number);
+  if (teamsLeft.length <= 1) {
+    let winTeam = teamsLeft[0] ?? -1;
+    const TEAM_NAMES = ['CHAOS','NATURE','ARCANE','IRON'];
+    const TEAM_BANNERS = ['🔴','🟢','🟣','🟠'];
+    let winName = winTeam >= 0 ? TEAM_NAMES[winTeam] : 'Nobody';
+    let winBanner = winTeam >= 0 ? TEAM_BANNERS[winTeam] : '💀';
+    let isPlayerWin = player && player.team === winTeam && player.alive;
+    victoryShown = true;
+    showVictory(winName, winBanner, isPlayerWin, winTeam);
+  }
+}
+
+function showVictory(teamName, banner, isPlayerTeam, winTeam) {
   let overlay = document.getElementById('death-overlay');
   let title = document.getElementById('death-title');
   let stats = document.getElementById('death-stats');
+  if (!overlay) return;
   if (title) title.textContent = isPlayerTeam
-    ? '🏆 VICTORY! ALL CASTLES CLAIMED!'
-    : banner + ' ' + teamName + ' CONQUERS ALL!';
+    ? '🏆 VICTORY! LAST TEAM STANDING!'
+    : banner + ' ' + teamName + ' WIPES THE FIELD!';
   let narrative = generateNarrative();
   let finalScore = kills*10 + itemsCollected*5 + goalsCompleted*25 + Math.floor(gameTime/10);
   if (stats) stats.innerHTML =
     '<div style="font-size:18px;color:'+(isPlayerTeam?'#f0c040':'#ff6666')+'">'+
-    banner+' Team '+teamName+' owns all '+castles.length+' castles!</div>' +
+    banner+' Team '+teamName+' stands alone!</div>' +
     '<div style="margin:8px 0">Your score: '+finalScore+'</div>' +
     '<div style="margin-top:12px;padding:10px;background:rgba(255,220,100,0.08);border:1px solid #f0c04044;border-radius:6px;font-size:12px;color:#ddd;line-height:1.7;text-align:left;max-width:420px">'+narrative+'</div>' +
     '<button onclick="navigator.clipboard.writeText('+JSON.stringify(narrative)+')" style="margin-top:8px;padding:6px 16px;background:#333;border:1px solid #666;color:#fff;border-radius:4px;cursor:pointer">📋 Copy Chronicle</button>';
   overlay.style.display = 'flex';
-  isDead = true;
+  if (!player || !player.alive) isDead = true; // spectator if already dead
 }
 
 function generateNarrative() {
@@ -1876,10 +2024,11 @@ function generateNarrative() {
   }
 
   // Ending
+  let killerStr = (player && player.lastKilledBy) ? ` — cut down by ${player.lastKilledBy}` : '';
   const endings = [
-    `After ${Math.floor(gameTime)} seconds of brutal combat, ${pDisplay} fell — their legend written in blood.`,
-    `${pDisplay}'s run ended at ${Math.floor(gameTime)}s, their deeds remembered by those who watched.`,
-    `The arena claimed ${pDisplay} after ${Math.floor(gameTime)} seconds of glorious struggle.`,
+    `After ${Math.floor(gameTime)} seconds of brutal combat, ${pDisplay} fell${killerStr}. Their legend written in blood.`,
+    `${pDisplay}'s run ended at ${Math.floor(gameTime)}s${killerStr}. Remembered by those who watched.`,
+    `The arena claimed ${pDisplay} after ${Math.floor(gameTime)} seconds of glory${killerStr}.`,
   ];
   lines.push(endings[Math.floor(Math.random()*endings.length)]);
 
@@ -2042,6 +2191,20 @@ function gameTick() {
   // Ranged cooldown
   if (rangedCooldown > 0) { rangedCooldown -= 0.5; if (rangedCooldown < 0) rangedCooldown = 0; }
 
+  // Player energy recharge inside own castle (5s per point)
+  if (player && player.alive) {
+    let inOwnCastle = castles.find(c => c.team === player.team && distFloat(player, c) < 2);
+    if (inOwnCastle && player.energy < player.maxEnergy) {
+      player.energyRechargeTimer = (player.energyRechargeTimer||0) + 1;
+      if (player.energyRechargeTimer >= 10) {
+        player.energyRechargeTimer = 0;
+        player.energy = Math.min(player.maxEnergy, player.energy + 1);
+        spawnFloatingText(player.x, player.y, '⚡+1', '#44aaff');
+        addLog('⚡ Energy restored in your castle! ('+player.energy+'/'+player.maxEnergy+')', 'log-heal');
+      }
+    }
+  }
+
   // Cooldown reduction for player special
   if (player.alive && gameTime % 1 === 0 && player.specialCooldown > 0) player.specialCooldown--;
 
@@ -2097,21 +2260,33 @@ function gameTick() {
     e.lastX = e.x; e.lastY = e.y;
   }
 
-  // AI item pickup (if near item and no enemy close)
+  // AI item pickup + food healing
   for (let e of entities) {
     if (!e.alive || e.isPlayer) continue;
-    let nearEnemy = entities.some(o => o.alive && o.team !== e.team && distFloat(e, o) < 4);
-    if (!nearEnemy && e.inventory.length < 3) {
-      let nearItem = items.find(it => distFloat(e, it) < 0.8);
-      if (nearItem) {
-        let idx = items.indexOf(nearItem);
-        items.splice(idx, 1);
+    let nearItem = items.find(it => distFloat(e, it) < 0.8);
+    if (nearItem) {
+      let idx = items.indexOf(nearItem);
+      items.splice(idx, 1);
+      if (nearItem.isFood) {
+        e.hp = Math.min(e.maxHp, e.hp + 2);
+        if (e.aiState === 'retreat' && e.hp >= e.maxHp * 0.5) e.aiState = 'battle';
+      } else if (nearItem.stat && e.stats[nearItem.stat] !== undefined && e.inventory.length < 3) {
         e.inventory.push(nearItem);
-        if (nearItem.isFood) { e.hp = Math.min(e.maxHp, e.hp + 1); }
-        else if (nearItem.stat && e.stats[nearItem.stat] !== undefined) { e.stats[nearItem.stat] = Math.min(9, e.stats[nearItem.stat] + (nearItem.golden ? 2 : 1)); }
+        e.stats[nearItem.stat] = Math.min(9, e.stats[nearItem.stat] + (nearItem.golden ? 2 : 1));
+      }
+    }
+    // Energy recharge when inside own castle (5s per point)
+    if (e.aiState === 'recharge' && e.energy < e.maxEnergy) {
+      e.energyRechargeTimer = (e.energyRechargeTimer || 0) + 0.5; // gameTick fires ~2/s
+      if (e.energyRechargeTimer >= 10) { // 10 ticks × 0.5s = 5s per point
+        e.energyRechargeTimer = 0;
+        e.energy = Math.min(e.maxEnergy, e.energy + 1);
       }
     }
   }
+
+  // Check last-team-standing win condition
+  checkLastTeamStanding();
 
   // Castle capture logic
   for (let castle of castles) {
@@ -2150,7 +2325,7 @@ function gameTick() {
     }
     // Periodic spawn from captured castle
     castle.spawnTimer = (castle.spawnTimer||0) + 0.5;
-    if (castle.spawnTimer >= 10 && castle.team >= 0) {
+    if (castle.spawnTimer >= 30 && castle.team >= 0) {
       castle.spawnTimer = 0;
       let aiCount = entities.filter(e=>e.alive).length;
       if (aiCount < 30) {
@@ -2361,31 +2536,45 @@ function createCharacter() {
 
 // --- Death ---
 function showDeath() {
+  // Game continues — spectator mode. Show a small banner, not the full overlay.
+  let killerStr = player && player.lastKilledBy ? ' — slain by ' + player.lastKilledBy : '';
+  addLog('☠️ You have fallen'+killerStr+'. Watching as spectator...', 'log-damage');
+  spawnFloatingText(player.x, player.y, '☠️ FALLEN', '#ff4444');
+  // Switch camera to overview
   isDead = true;
-  document.getElementById('death-title').textContent = '☠️ YOU DIED';
-  document.getElementById('death-overlay').style.display = 'flex';
-  let finalScore = kills * 10 + itemsCollected * 5 + goalsCompleted * 25 + Math.floor(gameTime / 10);
-  let narrative = generateNarrative();
-  document.getElementById('death-stats').innerHTML =
-    '<div>Kills: '+kills+' ('+kills*10+' pts)</div>' +
-    '<div>Items: '+itemsCollected+' ('+itemsCollected*5+' pts)</div>' +
-    '<div>Goals: '+goalsCompleted+' ('+goalsCompleted*25+' pts)</div>' +
-    '<div>Survived: '+Math.floor(gameTime)+'s ('+Math.floor(gameTime/10)+' pts)</div>' +
-    '<div style="margin-top:8px;font-size:20px;color:#f0c040">Final Score: '+finalScore+'</div>' +
-    '<div style="margin-top:12px;padding:10px;background:rgba(255,220,100,0.08);border:1px solid #f0c04044;border-radius:6px;font-size:12px;color:#ddd;line-height:1.7;text-align:left;max-width:420px">'+narrative+'</div>' +
-    '<button onclick="navigator.clipboard.writeText('+JSON.stringify(narrative)+')" style="margin-top:8px;padding:6px 16px;background:#333;border:1px solid #666;color:#fff;border-radius:4px;cursor:pointer">📋 Copy Chronicle</button>';
+  spectatorMode = true;
+  // Show the end overlay only when the game is actually over (victory fires it)
 }
 
 function respawn() {
   document.getElementById('death-overlay').style.display = 'none';
-  entities = entities.filter(e => e.id !== playerId);
-  let name = player.name;
+  // Full reset — fresh map, fresh factions
+  let name = player ? player.name : 'Hero';
+  entities = [];
+  items = [];
+  castles = [];
+  floatingTexts = [];
+  projectiles = [];
+  gameEvents = [];
+  kills = 0; itemsCollected = 0; goalsCompleted = 0; gameTime = 0;
+  score = 0; isDead = false; spectatorMode = false; victoryShown = false;
+  inventoryLog = []; healTimer = 0; recruitCooldown = 0;
+  aiSpawnTimer = 0; worldUpdateTimer = 0;
+
+  generateMap();
+  generateCastles();
+  spawnStartingArmies();
+  scatterItems(20);
+  spawnFoodItems(8);
+
   player = createEntity(name, true, playerId);
   player.displayName = (CLASS_EMOJI[player.cls]||'🧑') + ' ' + name;
+  player.lastKilledBy = null;
   entities.push(player);
-  kills = 0; itemsCollected = 0; goalsCompleted = 0; gameTime = 0;
-  score = 0; isDead = false; inventoryLog = [];
-  healTimer = 0; recruitCooldown = 0;
+
+  let pp = isoProject(player.x, player.y);
+  camera.x = pp.sx; camera.y = pp.sy;
+
   initGoals();
   combatLogEntries = [];
   document.getElementById('combat-log').innerHTML = '';
