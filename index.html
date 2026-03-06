@@ -183,7 +183,7 @@ body { background: #1a1a2e; color: #eee; font-family: 'Segoe UI', Tahoma, Geneva
 // ============================================================
 
 // --- Constants ---
-const TILE_W = 96, TILE_H = 48; // Zoomed in: larger tiles = less map visible
+let TILE_W = 32, TILE_H = 16; // Computed dynamically in resizeCanvas to fit full map on screen
 const MAP_SIZE = 60;
 const CLASS_COLORS = { Warrior:'#e04040', Guardian:'#4080e0', Scout:'#e0c040', Mage:'#a040e0', Sage:'#40d0d0', Commander:'#e08020' };
 const CLASS_EMOJI = { Warrior:'⚔️', Guardian:'🛡️', Scout:'🏹', Mage:'🔮', Sage:'📜', Commander:'👑' };
@@ -1848,17 +1848,10 @@ function render(timestamp) {
     }
   }
 
-  // Camera follow player (or spectator overview)
-  if (spectatorMode) {
-    // Pan slowly across the whole map
-    let midIso = isoProject(MAP_SIZE/2, MAP_SIZE/2);
-    camera.x += (midIso.sx - camera.x) * Math.min(1, dt * 0.5);
-    camera.y += (midIso.sy - camera.y) * Math.min(1, dt * 0.5);
-  } else if (player) {
-    let pp = isoProject(player.renderX || player.x, player.renderY || player.y);
-    camera.x += (pp.sx - camera.x) * Math.min(1, dt * 5);
-    camera.y += (pp.sy - camera.y) * Math.min(1, dt * 5);
-  }
+  // Camera locked to map center — entire field always visible
+  let midIso = isoProject(MAP_SIZE / 2, MAP_SIZE / 2);
+  camera.x = midIso.sx;
+  camera.y = midIso.sy;
 
   // Clear
   ctx.fillStyle = '#0a0a1a';
@@ -2637,11 +2630,23 @@ function resizeCanvas() {
   }
   viewCX = canvas.width / 2;
   viewCY = canvas.height / 2;
-  if (player) {
-    const pp = isoProject(player.x, player.y);
-    camera.x = pp.sx;
-    camera.y = pp.sy;
-  }
+
+  // Compute tile size so the full MAP_SIZE×MAP_SIZE iso diamond fits in the canvas.
+  // Iso diamond width  = (MAP_SIZE-1) * TILE_W
+  // Iso diamond height = (MAP_SIZE-1) * TILE_H  (= TILE_W/2)
+  // Fit with a small margin (0.92 = ~8% padding on each side)
+  let tileByW = Math.floor(canvas.width  * 0.92 / (MAP_SIZE - 1));
+  let tileByH = Math.floor(canvas.height * 0.92 / ((MAP_SIZE - 1) / 2));
+  let newTileW = Math.max(4, Math.min(tileByW, tileByH));
+  // Snap to even number so TILE_H = TILE_W/2 stays integer
+  if (newTileW % 2 !== 0) newTileW--;
+  TILE_W = newTileW;
+  TILE_H = TILE_W / 2;
+
+  // Lock camera to map center (entire map always visible)
+  let mid = isoProject(MAP_SIZE / 2, MAP_SIZE / 2);
+  camera.x = mid.sx;
+  camera.y = mid.sy;
 }
 
 function init() {
