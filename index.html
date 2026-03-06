@@ -1731,66 +1731,107 @@ function drawTile(x, y) {
   let sx = p.sx - camera.x + viewCX;
   let sy = p.sy - camera.y + viewCY;
 
-  if (sx < -TILE_W*2 || sx > canvas.width + TILE_W*2 || sy < -TILE_H*4 || sy > canvas.height + TILE_H*4) return;
+  if (sx < -TILE_W*3 || sx > canvas.width + TILE_W*3 || sy < -TILE_H*8 || sy > canvas.height + TILE_H*4) return;
 
   let tile = tiles[y][x];
+  let hw = TILE_W / 2, hh = TILE_H / 2;
+
+  // Elevation: positive = raised above ground, negative = sunken below
+  // All geometry is expressed as pixel offset UPWARD from the base grid position.
+  // "rise" = how many pixels the top surface is above the standard ground plane.
+  // "depth" = thickness of the side faces (visible wall height in pixels).
   let topColor, leftColor, rightColor;
-  let depth = 8;
+  let rise = 0;   // upward shift of the top surface
+  let depth = TILE_H; // side face thickness (= standard ground depth by default)
 
   switch (tile) {
     case 'grass':
-      topColor = '#6dbf67'; leftColor = '#4e9948'; rightColor = '#3d7a39'; break;
+      topColor = '#6dbf67'; leftColor = '#4a9040'; rightColor = '#387830';
+      rise = 0; depth = TILE_H; break;
     case 'stone':
-      topColor = '#b0b0b0'; leftColor = '#888888'; rightColor = '#787878'; break;
+      topColor = '#b0b0b0'; leftColor = '#888'; rightColor = '#707070';
+      rise = TILE_H * 0.3; depth = TILE_H * 1.3; break;
     case 'water': {
-      let wave = Math.sin(animTime * 3 + x * 0.5 + y * 0.7) * 0.15;
-      let g = Math.floor(195 + wave * 40), b = Math.floor(247 + wave * 8);
-      topColor = 'rgb(79,'+g+','+b+')'; leftColor = '#2a8ac4'; rightColor = '#1a6a9a';
-      depth = 4; break;
+      let wave = Math.sin(animTime * 3 + x * 0.5 + y * 0.7) * 0.12;
+      let g = Math.floor(180 + wave * 40), b = Math.floor(240 + wave * 8);
+      topColor = 'rgb(40,'+g+','+b+')'; leftColor = '#1a6090'; rightColor = '#104870';
+      rise = -TILE_H * 0.45; depth = TILE_H * 0.55; break; // sunken below ground
     }
     case 'forest':
-      topColor = '#5aad54'; leftColor = '#3d7a39'; rightColor = '#2d5a29'; break;
+      topColor = '#5aad54'; leftColor = '#357a30'; rightColor = '#255520';
+      rise = TILE_H * 0.15; depth = TILE_H * 1.15; break;
     case 'wall':
-      topColor = '#909090'; leftColor = '#555555'; rightColor = '#404040'; depth = 32; break;
+      topColor = '#a0a0a0'; leftColor = '#505050'; rightColor = '#383838';
+      rise = TILE_H * 3.0; depth = TILE_H * 4.0; break; // tall walls
     case 'dungeon':
-      topColor = '#303030'; leftColor = '#202020'; rightColor = '#181818'; depth = 6; break;
+      topColor = '#404040'; leftColor = '#252525'; rightColor = '#1a1a1a';
+      rise = TILE_H * 0.1; depth = TILE_H * 1.1; break;
     case 'sand':
-      topColor = '#d4b06a'; leftColor = '#b89050'; rightColor = '#9a7840'; break;
-    case 'lava': // Replaced by swamp
+      topColor = '#d4b06a'; leftColor = '#b89050'; rightColor = '#9a7840';
+      rise = 0; depth = TILE_H; break;
+    case 'lava':
     case 'swamp':
-      topColor = '#3a6030'; leftColor = '#2a4820'; rightColor = '#1e3818'; depth = 5; break;
+      topColor = '#3a6030'; leftColor = '#284020'; rightColor = '#1e3018';
+      rise = -TILE_H * 0.1; depth = TILE_H * 0.9; break;
     case 'ice':
-      topColor = '#c8e8f8'; leftColor = '#a0c8e0'; rightColor = '#88b0d0'; break;
-    case 'swamp':
-      topColor = '#3a6030'; leftColor = '#2a4820'; rightColor = '#1e3818'; depth = 5; break;
+      topColor = '#c8e8f8'; leftColor = '#a0c0d8'; rightColor = '#88a8c0';
+      rise = TILE_H * 0.05; depth = TILE_H * 1.05; break;
     case 'bridge':
-      topColor = '#a07840'; leftColor = '#806030'; rightColor = '#685028'; depth = 6; break;
+      topColor = '#a07840'; leftColor = '#806030'; rightColor = '#685028';
+      rise = TILE_H * 0.2; depth = TILE_H * 1.2; break;
     case 'road':
-      topColor = '#c0b090'; leftColor = '#9a8a6a'; rightColor = '#8a7a5a'; depth = 6; break;
+      topColor = '#c0b090'; leftColor = '#9a8a6a'; rightColor = '#8a7a5a';
+      rise = 0; depth = TILE_H; break;
     case 'tower':
-      topColor = '#909090'; leftColor = '#707070'; rightColor = '#585858'; depth = 40; break;
+      topColor = '#888'; leftColor = '#606060'; rightColor = '#484848';
+      rise = TILE_H * 4.5; depth = TILE_H * 5.5; break;
     default:
-      topColor = '#6dbf67'; leftColor = '#4e9948'; rightColor = '#3d7a39';
+      topColor = '#6dbf67'; leftColor = '#4a9040'; rightColor = '#387830';
+      rise = 0; depth = TILE_H;
   }
 
-  let hw = TILE_W / 2, hh = TILE_H / 2;
+  // For water/sunken: draw the ground-level "pit walls" first (the rim around it)
+  if (rise < 0) {
+    let rimLeft = '#2a6a30', rimRight = '#1e5228';
+    ctx.fillStyle = rimRight;
+    ctx.beginPath();
+    ctx.moveTo(sx, sy + hh); ctx.lineTo(sx + hw, sy); ctx.lineTo(sx + hw, sy - rise); ctx.lineTo(sx, sy + hh - rise);
+    ctx.closePath(); ctx.fill();
+    ctx.fillStyle = rimLeft;
+    ctx.beginPath();
+    ctx.moveTo(sx, sy + hh); ctx.lineTo(sx - hw, sy); ctx.lineTo(sx - hw, sy - rise); ctx.lineTo(sx, sy + hh - rise);
+    ctx.closePath(); ctx.fill();
+  }
+
+  // Raised side faces (left and right)
+  // The top surface is at sy - rise.  Side faces go DOWN from the top to sy - rise + depth.
+  let ty = sy - rise; // top-surface Y
 
   // Right face
   ctx.fillStyle = rightColor;
   ctx.beginPath();
-  ctx.moveTo(sx, sy + hh); ctx.lineTo(sx + hw, sy); ctx.lineTo(sx + hw, sy + depth); ctx.lineTo(sx, sy + hh + depth);
+  ctx.moveTo(sx,      ty + hh);
+  ctx.lineTo(sx + hw, ty);
+  ctx.lineTo(sx + hw, ty + depth);
+  ctx.lineTo(sx,      ty + hh + depth);
   ctx.closePath(); ctx.fill();
 
   // Left face
   ctx.fillStyle = leftColor;
   ctx.beginPath();
-  ctx.moveTo(sx, sy + hh); ctx.lineTo(sx - hw, sy); ctx.lineTo(sx - hw, sy + depth); ctx.lineTo(sx, sy + hh + depth);
+  ctx.moveTo(sx,      ty + hh);
+  ctx.lineTo(sx - hw, ty);
+  ctx.lineTo(sx - hw, ty + depth);
+  ctx.lineTo(sx,      ty + hh + depth);
   ctx.closePath(); ctx.fill();
 
-  // Top face
+  // Top face (diamond)
   ctx.fillStyle = topColor;
   ctx.beginPath();
-  ctx.moveTo(sx, sy - hh); ctx.lineTo(sx + hw, sy); ctx.lineTo(sx, sy + hh); ctx.lineTo(sx - hw, sy);
+  ctx.moveTo(sx,      ty - hh);
+  ctx.lineTo(sx + hw, ty);
+  ctx.lineTo(sx,      ty + hh);
+  ctx.lineTo(sx - hw, ty);
   ctx.closePath(); ctx.fill();
 
 
@@ -1800,30 +1841,30 @@ function drawTile(x, y) {
     let sheen = 0.08 + Math.sin(animTime * 1.5 + x * 2 + y) * 0.04;
     ctx.fillStyle = 'rgba(255,255,255,' + sheen + ')';
     ctx.beginPath();
-    ctx.moveTo(sx - 8, sy - 4); ctx.lineTo(sx + 4, sy - 8); ctx.lineTo(sx + 10, sy); ctx.lineTo(sx - 2, sy + 4);
+    ctx.moveTo(sx - 8, ty - 4); ctx.lineTo(sx + 4, ty - 8); ctx.lineTo(sx + 10, ty); ctx.lineTo(sx - 2, ty + 4);
     ctx.closePath(); ctx.fill();
   }
 
   // Bridge planks
   if (tile === 'bridge') {
-    ctx.strokeStyle = '#60482a';
-    ctx.lineWidth = 1;
+    ctx.strokeStyle = '#60482a'; ctx.lineWidth = 1;
     for (let i = -2; i <= 2; i++) {
       ctx.beginPath();
-      ctx.moveTo(sx - hw * 0.6 + i * 5, sy + i * 2.5 - 2);
-      ctx.lineTo(sx + hw * 0.6 + i * 5, sy + i * 2.5 + 2);
+      ctx.moveTo(sx - hw*0.6 + i*5, ty + i*2.5 - 2);
+      ctx.lineTo(sx + hw*0.6 + i*5, ty + i*2.5 + 2);
       ctx.stroke();
     }
   }
 
-  // Forest: tree
+  // Forest: tree (rises from top surface)
   if (tile === 'forest') {
+    let treeH = Math.max(12, TILE_H * 1.2);
     ctx.fillStyle = '#6b4226';
-    ctx.fillRect(sx - 3, sy - 20, 6, 14);
-    ctx.fillStyle = '#2d8a2e';
-    ctx.beginPath(); ctx.arc(sx, sy - 24, 10, 0, Math.PI * 2); ctx.fill();
+    ctx.fillRect(sx - 2, ty - hh - treeH, 4, treeH);
+    ctx.fillStyle = '#2d7a2e';
+    ctx.beginPath(); ctx.arc(sx, ty - hh - treeH - 6, TILE_H * 0.8, 0, Math.PI * 2); ctx.fill();
     ctx.fillStyle = '#3aaa3b';
-    ctx.beginPath(); ctx.arc(sx - 2, sy - 27, 7, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(sx - 1, ty - hh - treeH - 8, TILE_H * 0.55, 0, Math.PI * 2); ctx.fill();
 
     // Mushrooms on forest tiles (deterministic)
     if (tileRand(x, y, 42) < 0.4) {
@@ -1840,87 +1881,75 @@ function drawTile(x, y) {
     }
   }
 
-  // Grass decorations (flowers and rocks)
+  // Grass decorations (flowers and rocks) on the top surface
   if (tile === 'grass') {
     let r1 = tileRand(x, y, 1);
-    // Small flowers
     if (r1 < 0.3) {
-      let flowerColors = ['#ff6688', '#ffcc44', '#aa66ff', '#66ccff', '#ff8844'];
-      let fc = flowerColors[Math.floor(tileRand(x, y, 2) * flowerColors.length)];
-      let fx = sx + (tileRand(x, y, 3) - 0.5) * 24;
-      let fy = sy + (tileRand(x, y, 4) - 0.5) * 8;
+      let flowerColors = ['#ff6688','#ffcc44','#aa66ff','#66ccff','#ff8844'];
+      let fc = flowerColors[Math.floor(tileRand(x,y,2)*flowerColors.length)];
+      let fx = sx + (tileRand(x,y,3)-0.5)*24, fy = ty + (tileRand(x,y,4)-0.5)*8;
       ctx.fillStyle = fc;
-      ctx.beginPath(); ctx.arc(fx, fy, 2, 0, Math.PI * 2); ctx.fill();
-      // Second flower sometimes
-      if (tileRand(x, y, 5) < 0.5) {
-        let fx2 = sx + (tileRand(x, y, 6) - 0.5) * 20;
-        let fy2 = sy + (tileRand(x, y, 7) - 0.5) * 6;
-        let fc2 = flowerColors[Math.floor(tileRand(x, y, 8) * flowerColors.length)];
-        ctx.fillStyle = fc2;
-        ctx.beginPath(); ctx.arc(fx2, fy2, 1.5, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(fx, fy, 2, 0, Math.PI*2); ctx.fill();
+      if (tileRand(x,y,5) < 0.5) {
+        let fx2 = sx+(tileRand(x,y,6)-0.5)*20, fy2 = ty+(tileRand(x,y,7)-0.5)*6;
+        ctx.fillStyle = flowerColors[Math.floor(tileRand(x,y,8)*flowerColors.length)];
+        ctx.beginPath(); ctx.arc(fx2, fy2, 1.5, 0, Math.PI*2); ctx.fill();
       }
     }
-    // Small rocks
     if (r1 >= 0.3 && r1 < 0.45) {
-      let rx = sx + (tileRand(x, y, 10) - 0.5) * 22;
-      let ry = sy + (tileRand(x, y, 11) - 0.5) * 8;
-      ctx.fillStyle = '#888';
-      ctx.beginPath(); ctx.arc(rx, ry, 2.5, 0, Math.PI * 2); ctx.fill();
-      ctx.fillStyle = '#aaa';
-      ctx.beginPath(); ctx.arc(rx - 0.5, ry - 0.5, 1.5, 0, Math.PI * 2); ctx.fill();
+      let rx = sx+(tileRand(x,y,10)-0.5)*22, ry = ty+(tileRand(x,y,11)-0.5)*8;
+      ctx.fillStyle = '#888'; ctx.beginPath(); ctx.arc(rx, ry, 2.5, 0, Math.PI*2); ctx.fill();
+      ctx.fillStyle = '#aaa'; ctx.beginPath(); ctx.arc(rx-0.5, ry-0.5, 1.5, 0, Math.PI*2); ctx.fill();
     }
   }
 
-  // Wall: merlons
+  // Wall: merlons rising from the top surface
   if (tile === 'wall') {
-    ctx.fillStyle = '#909090';
-    for (let i = -1; i <= 1; i++) ctx.fillRect(sx + i * 12 - 4, sy - hh - 8, 8, 6);
+    let mTop = ty - hh - rise * 0.0; // already factored into ty via rise
+    let mH = Math.max(4, TILE_H * 0.5);
+    ctx.fillStyle = '#b0b0b0';
+    for (let i = -1; i <= 1; i++) ctx.fillRect(sx + i*(TILE_W*0.28) - TILE_W*0.1, ty - hh - mH, TILE_W*0.18, mH);
+    ctx.fillStyle = '#888';
+    for (let i = -1; i <= 1; i++) ctx.fillRect(sx + i*(TILE_W*0.28) - TILE_W*0.1, ty - hh - mH, TILE_W*0.18, 2);
   }
 
-  // Dungeon: torch glow
+  // Dungeon: torch glow on top surface
   if (tile === 'dungeon') {
-    let grad = ctx.createRadialGradient(sx, sy, 2, sx, sy, 24);
-    grad.addColorStop(0, 'rgba(255,160,40,0.3)');
+    let grad = ctx.createRadialGradient(sx, ty, 2, sx, ty, 20);
+    grad.addColorStop(0, 'rgba(255,160,40,0.25)');
     grad.addColorStop(1, 'rgba(255,160,40,0)');
     ctx.fillStyle = grad;
-    ctx.fillRect(sx - 24, sy - 24, 48, 48);
-    let flicker = Math.sin(animTime * 8 + x + y) * 0.15 + 0.85;
-    ctx.fillStyle = 'rgba(255,120,20,'+(0.15 * flicker)+')';
-    ctx.beginPath(); ctx.arc(sx, sy - 4, 4, 0, Math.PI * 2); ctx.fill();
+    ctx.fillRect(sx-20, ty-20, 40, 40);
+    let flicker = Math.sin(animTime*8+x+y)*0.15+0.85;
+    ctx.fillStyle = 'rgba(255,120,20,'+(0.12*flicker)+')';
+    ctx.beginPath(); ctx.arc(sx, ty-2, 3, 0, Math.PI*2); ctx.fill();
   }
 
-  // Road: center stripe
+  // Road: center stripe on top surface
   if (tile === 'road') {
-    ctx.strokeStyle = '#d8d0b8';
-    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = '#d8d0b8'; ctx.lineWidth = 1.5;
     ctx.beginPath();
-    ctx.moveTo(sx - hw*0.3, sy - hh*0.3);
-    ctx.lineTo(sx + hw*0.3, sy + hh*0.3);
+    ctx.moveTo(sx - hw*0.3, ty - hh*0.3);
+    ctx.lineTo(sx + hw*0.3, ty + hh*0.3);
     ctx.stroke();
   }
 
-  // Tower: battlements on top
+  // Tower: tall flag
   if (tile === 'tower') {
+    let flagTop = ty - hh - TILE_H * 0.5;
     ctx.fillStyle = '#a0a0a0';
-    for (let i = -1; i <= 1; i++) {
-      ctx.fillRect(sx + i * 10 - 3, sy - hh - depth - 4, 6, 5);
-    }
-    // Flag on top
-    ctx.fillStyle = '#aa0000';
-    ctx.fillRect(sx, sy - hh - depth - 14, 8, 6);
-    ctx.fillStyle = '#666';
-    ctx.fillRect(sx - 1, sy - hh - depth - 16, 2, 18);
+    for (let i = -1; i <= 1; i++) ctx.fillRect(sx + i*10 - 3, flagTop, 6, 5);
+    ctx.fillStyle = '#aa0000'; ctx.fillRect(sx, flagTop - 10, 10, 6);
+    ctx.fillStyle = '#666'; ctx.fillRect(sx-1, flagTop-12, 2, 18);
   }
 
-  // Water: river flow direction indicator
+  // Water: animated ripples on sunken surface
   if (tile === 'water') {
     let flowX = Math.sin(animTime * 1.5 + x * 0.3) * 3;
-    ctx.globalAlpha = 0.15;
-    ctx.strokeStyle = '#fff';
-    ctx.lineWidth = 1;
+    ctx.globalAlpha = 0.18;
+    ctx.strokeStyle = '#cceeff'; ctx.lineWidth = 1;
     ctx.beginPath();
-    ctx.moveTo(sx - 6 + flowX, sy);
-    ctx.lineTo(sx + 6 + flowX, sy);
+    ctx.moveTo(sx - 5 + flowX, ty); ctx.lineTo(sx + 5 + flowX, ty);
     ctx.stroke();
     ctx.globalAlpha = 1;
   }
@@ -2941,6 +2970,26 @@ function init() {
   ctx = canvas.getContext('2d');
   resizeCanvas();
   window.addEventListener('resize', resizeCanvas);
+
+  // Mouse-wheel zoom
+  document.getElementById('canvas-container').addEventListener('wheel', (e) => {
+    e.preventDefault();
+    let delta = e.deltaY > 0 ? -0.9 : 1.1; // zoom out / in
+    let newTW = Math.round(TILE_W * delta);
+    if (newTW % 2 !== 0) newTW += 1;
+    // Clamp: min = auto-fit (so full map always fits), max = 4× auto-fit
+    let tileByW = Math.floor(canvas.width  * 0.92 / (MAP_SIZE - 1));
+    let tileByH = Math.floor(canvas.height * 0.92 / ((MAP_SIZE - 1) / 2));
+    let minTile = Math.max(2, Math.min(tileByW, tileByH));
+    if (minTile % 2 !== 0) minTile--;
+    let maxTile = minTile * 4;
+    newTW = Math.max(minTile, Math.min(maxTile, newTW));
+    TILE_W = newTW;
+    TILE_H = TILE_W / 2;
+    // Keep camera centered on map
+    let mid = isoProject(MAP_SIZE/2, MAP_SIZE/2);
+    camera.x = mid.sx; camera.y = mid.sy;
+  }, { passive: false });
   generateMap();
   generateCastles();
   spawnStartingArmies();
