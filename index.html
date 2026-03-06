@@ -2916,17 +2916,8 @@ document.addEventListener('keydown', (e) => {
 
 document.addEventListener('keyup', (e) => { delete keysDown[e.code]; });
 
-document.getElementById('btn-special').addEventListener('click', () => {
-  if (player && player.alive) useSpecial(player);
-});
-
-document.getElementById('btn-recruit').addEventListener('click', () => {
-  if (player && player.alive) attemptRecruit();
-});
-
-document.getElementById('btn-ranged').addEventListener('click', () => {
-  if (player && player.alive) attemptRangedAttack();
-});
+// Buttons are now dynamically generated in buildActionButtons()
+// Legacy listeners removed — btn-special/recruit/ranged no longer in DOM
 
 document.getElementById('name-input').addEventListener('keydown', (e) => {
   if (e.key === 'Enter') createCharacter();
