@@ -2819,8 +2819,9 @@ function createCharacter() {
   document.getElementById('creation-overlay').style.display = 'none';
   document.getElementById('game-container').style.display = 'grid';
 
-  let pp = isoProject(player.x, player.y);
-  camera.x = pp.sx; camera.y = pp.sy;
+  // Recompute canvas size now that the grid is visible
+  TILE_W = 0; // force recalc
+  resizeCanvas();
 
   let theme = detectTheme(name);
   addLog((player.displayName||player.name)+' the '+player.cls+' enters the arena!', 'log-info');
@@ -2936,33 +2937,34 @@ document.addEventListener('click', () => { if (!audioUnlocked) initAudio(); });
 
 // --- Init ---
 function resizeCanvas() {
-  const w = window.innerWidth - 200 - 220;
-  const h = window.innerHeight - 44 - 48;
-  if (canvas.width !== w || canvas.height !== h) {
-    canvas.width = w;
-    canvas.height = h;
-    canvas.style.width = w + 'px';
-    canvas.style.height = h + 'px';
-  }
-  viewCX = canvas.width / 2;
-  viewCY = canvas.height / 2;
+  // Use window dimensions directly — the canvas sits inside the game grid
+  // Left panel 200px, right panel 220px, top bar 44px, bottom bar 48px
+  const w = Math.max(400, window.innerWidth - 200 - 220);
+  const h = Math.max(300, window.innerHeight - 44 - 48);
+  canvas.width = w;
+  canvas.height = h;
+  canvas.style.width = w + 'px';
+  canvas.style.height = h + 'px';
+  viewCX = w / 2;
+  viewCY = h / 2;
 
-  // Compute tile size so the full MAP_SIZE×MAP_SIZE iso diamond fits in the canvas.
-  // Iso diamond width  = (MAP_SIZE-1) * TILE_W
-  // Iso diamond height = (MAP_SIZE-1) * TILE_H  (= TILE_W/2)
-  // Fit with a small margin (0.92 = ~8% padding on each side)
-  let tileByW = Math.floor(canvas.width  * 0.92 / (MAP_SIZE - 1));
-  let tileByH = Math.floor(canvas.height * 0.92 / ((MAP_SIZE - 1) / 2));
+  // Compute tile size so the full MAP_SIZE iso diamond fits on screen
+  let tileByW = Math.floor(w  * 0.92 / (MAP_SIZE - 1));
+  let tileByH = Math.floor(h  * 0.92 / ((MAP_SIZE - 1) / 2));
   let newTileW = Math.max(4, Math.min(tileByW, tileByH));
-  // Snap to even number so TILE_H = TILE_W/2 stays integer
   if (newTileW % 2 !== 0) newTileW--;
-  TILE_W = newTileW;
-  TILE_H = TILE_W / 2;
+  // Only reset tile size if not manually zoomed
+  if (!TILE_W || TILE_W < 2) {
+    TILE_W = newTileW;
+    TILE_H = TILE_W / 2;
+  }
 
-  // Lock camera to map center (entire map always visible)
-  let mid = isoProject(MAP_SIZE / 2, MAP_SIZE / 2);
-  camera.x = mid.sx;
-  camera.y = mid.sy;
+  // Lock camera to map center
+  if (TILE_W >= 2) {
+    let mid = isoProject(MAP_SIZE / 2, MAP_SIZE / 2);
+    camera.x = mid.sx;
+    camera.y = mid.sy;
+  }
 }
 
 function init() {
