@@ -48,13 +48,18 @@ body { background: #1a1a2e; color: #eee; font-family: 'Segoe UI', Tahoma, Geneva
 .log-item { color: #ffcc44; }
 .log-goal { color: #44ffcc; }
 .log-world { color: #cc88ff; }
+.log-narrate { font-style: italic; opacity: 0.92; }
 .log-recruit { color: #7fffbf; }
 #nearby-panel { border-top: 1px solid #3a2a5a; padding: 8px; max-height: 200px; overflow-y: auto; }
 #nearby-panel h3 { font-size: 12px; color: #888; text-transform: uppercase; margin-bottom: 4px; }
 .nearby-entity { font-size: 11px; padding: 2px 0; display: flex; justify-content: space-between; }
 
 /* Bottom bar */
-#bottom-bar { grid-column: 1 / -1; background: linear-gradient(0deg, #2a1a3e, #1a1a2e); border-top: 2px solid #5a3a8a; display: flex; align-items: center; justify-content: center; gap: 16px; padding: 0 16px; }
+#bottom-bar { grid-column: 1 / -1; background: linear-gradient(0deg, #2a1a3e, #1a1a2e); border-top: 2px solid #5a3a8a; display: flex; align-items: center; gap: 8px; padding: 4px 12px; min-height: 48px; }
+.action-btn { padding: 6px 14px; border-radius: 6px; border: 1px solid #666; color: #fff; cursor: pointer; font-size: 12px; font-weight: bold; transition: all 0.15s; white-space: nowrap; }
+.action-btn:hover { filter: brightness(1.3); transform: translateY(-1px); }
+.action-btn:disabled { opacity: 0.35; cursor: default; transform: none; }
+.action-btn .cd { font-size: 10px; opacity: 0.7; margin-left: 4px; }
 #btn-special { padding: 8px 24px; background: linear-gradient(180deg, #6a3aaa, #4a2a7a); border: 1px solid #8a5aca; color: #fff; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: bold; transition: all 0.2s; }
 #btn-special:hover { background: linear-gradient(180deg, #8a5aca, #6a3aaa); }
 #btn-special:disabled { opacity: 0.4; cursor: default; }
@@ -165,15 +170,11 @@ body { background: #1a1a2e; color: #eee; font-family: 'Segoe UI', Tahoma, Geneva
     </div>
   </div>
 
-  <!-- Bottom Bar -->
+  <!-- Bottom Bar: dynamic action buttons -->
   <div id="bottom-bar">
-    <button id="btn-special" disabled>Special Ability</button>
-    <span id="cooldown-text"></span>
-    <button id="btn-ranged" disabled>🏹 Ranged Attack</button>
-    <span id="ranged-cooldown-text"></span>
-    <button id="btn-recruit" disabled>📣 Recruit</button>
-    <span id="recruit-cooldown-text"></span>
-    <button id="btn-wait" onclick="playerWait()">WAIT</button>
+    <div id="action-buttons" style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;flex:1"></div>
+    <button id="btn-wait" onclick="playerWait()" style="margin-left:auto">⏳ Wait</button>
+    <button onclick="exportChronicle()" style="padding:6px 14px;background:#2a2a4a;border:1px solid #6a5a9a;color:#ccc;border-radius:5px;cursor:pointer;font-size:12px">📋 Chronicle</button>
   </div>
 </div>
 
@@ -198,6 +199,286 @@ const ABILITIES = {
   Sage: { name:'Mind Link', desc:'+3 to counter-roll' },
   Commander: { name:'Rally', desc:'Nearby allies +2 to next roll' }
 };
+
+// ── Name-theme detection ──────────────────────────────────────────────────────
+const NAME_THEMES = {
+  fire:    { keys:['fire','flame','burn','ember','blaze','ash','pyro','inferno'],    color:'#ff6622', accent:'#ff4400' },
+  shadow:  { keys:['shadow','dark','void','night','shade','black','dusk','death','bone','skull','crypt'], color:'#9966cc', accent:'#6633aa' },
+  storm:   { keys:['storm','thunder','wind','bolt','gale','sky','cloud','volt','zap'], color:'#44aaff', accent:'#0077cc' },
+  nature:  { keys:['leaf','grove','wild','green','root','thorn','vine','bark','fern','oak'], color:'#44cc44', accent:'#228822' },
+  iron:    { keys:['iron','steel','forge','blade','anvil','hammer','smith','vault','stone'], color:'#aaaaaa', accent:'#666666' },
+  light:   { keys:['light','holy','divine','sacred','dawn','sun','ray','gold','radiant'],  color:'#ffdd44', accent:'#ccaa00' },
+  arcane:  { keys:['arcane','mystic','rune','spell','mage','mana','rift','nexus','hex'],   color:'#cc44ff', accent:'#8800cc' },
+};
+
+function detectTheme(name) {
+  let lower = name.toLowerCase();
+  for (let [key, def] of Object.entries(NAME_THEMES)) {
+    if (def.keys.some(k => lower.includes(k))) return { key, ...def };
+  }
+  return { key:'default', color:'#f0c040', accent:'#cc8800' };
+}
+
+// ── Action button definitions keyed by stat + theme ────────────────────────
+const ACTION_DEFS = {
+  atk:  [
+    { id:'melee',   label:(t)=>t==='fire'?'🔥 Flame Strike':t==='shadow'?'💀 Death Blow':t==='storm'?'⚡ Shock Slash':'⚔️ Strike',      desc:'Melee attack nearest enemy',          fn:'doMeleeAction',    color:'#c03030', key:'E' },
+    { id:'special', label:(t)=>t==='fire'?'🔥 Berserker Blaze':t==='shadow'?'💀 Dark Fury':t==='storm'?'⚡ Thunder Rage':'⚔️ Berserk',  desc:'Special ability (class)',              fn:'doSpecialAction',  color:'#8822aa', key:'Space' },
+  ],
+  def:  [
+    { id:'fortify', label:(t)=>t==='iron'?'🛡️ Steel Wall':t==='light'?'☀️ Divine Guard':t==='nature'?'🌿 Bark Skin':'🛡️ Fortify',      desc:'Boost defense this round',             fn:'doFortifyAction',  color:'#2255bb', key:'Q' },
+  ],
+  spd:  [
+    { id:'dash',    label:(t)=>t==='storm'?'⚡ Gale Dash':t==='shadow'?'🌑 Shadow Step':t==='fire'?'🔥 Blaze Rush':'👟 Dash',           desc:'Move rapidly to clicked position',     fn:'doDashAction',     color:'#888800', key:'D' },
+  ],
+  ene:  [
+    { id:'heal',    label:(t)=>t==='nature'?'🌿 Regenerate':t==='light'?'☀️ Mend':t==='arcane'?'🔮 Soul Mend':'💎 Recover',            desc:'Restore 2 HP; costs no turn',          fn:'doHealAction',     color:'#226622', key:'H' },
+  ],
+  int:  [
+    { id:'scout',   label:(t)=>t==='arcane'?'🔮 Scry':t==='shadow'?'👁️ Dark Sight':t==='storm'?'⚡ Sensorstorm':'📖 Scout',           desc:'Reveal nearby mobs in log',            fn:'doScoutAction',    color:'#553388', key:'S' },
+  ],
+  cmd:  [
+    { id:'ranged',  label:(t)=>t==='fire'?'🔥 Fire Arrow':t==='storm'?'⚡ Bolt':t==='shadow'?'💀 Death Ray':'🏹 Ranged',               desc:'Ranged attack (costs 1 ENE)',          fn:'doRangedAction',   color:'#885500', key:'F' },
+    { id:'recruit', label:(t)=>t==='shadow'?'💀 Corrupt':t==='light'?'☀️ Convert':t==='arcane'?'🔮 Enthrall':'📣 Recruit',            desc:'Recruit nearest enemy mob',            fn:'doRecruitAction',  color:'#116633', key:'R' },
+  ],
+};
+
+function buildActionButtons() {
+  if (!player) return;
+  let el = document.getElementById('action-buttons');
+  if (!el) return;
+  el.innerHTML = '';
+  let theme = detectTheme(player.name);
+  player._theme = theme;
+
+  // Sort stats to pick actions for player's top 4 stats
+  let sorted = Object.entries(player.stats).sort((a,b) => b[1]-a[1]);
+  let used = new Set();
+  let buttons = [];
+  for (let [stat] of sorted) {
+    let defs = ACTION_DEFS[stat] || [];
+    for (let def of defs) {
+      if (!used.has(def.id)) {
+        used.add(def.id);
+        buttons.push({ ...def, theme });
+      }
+    }
+  }
+  // Always ensure special is included
+  if (!used.has('special')) {
+    buttons.push({ ...ACTION_DEFS.atk[1], theme });
+  }
+
+  for (let btn of buttons.slice(0, 7)) {
+    let b = document.createElement('button');
+    b.className = 'action-btn';
+    b.id = 'abtn-' + btn.id;
+    b.title = btn.desc + ' [' + btn.key + ']';
+    b.style.background = btn.theme.color + '33';
+    b.style.borderColor = btn.theme.color;
+    b.onclick = () => window[btn.fn] && window[btn.fn]();
+    el.appendChild(b);
+    btn._el = b;
+  }
+  player._actionBtns = buttons;
+  refreshActionButtons();
+}
+
+function refreshActionButtons() {
+  if (!player || !player._actionBtns) return;
+  for (let btn of player._actionBtns) {
+    let b = document.getElementById('abtn-' + btn.id);
+    if (!b) continue;
+    let label = typeof btn.label === 'function' ? btn.label(player._theme.key) : btn.label;
+    let cd = getActionCooldown(btn.id);
+    b.innerHTML = label + (cd > 0 ? '<span class="cd"> '+cd.toFixed(0)+'s</span>' : '');
+    b.disabled = !player.alive || cd > 0 || (btn.id==='ranged' && player.energy<=0);
+  }
+}
+
+function getActionCooldown(id) {
+  if (!player) return 0;
+  if (id === 'special') return Math.max(0, player.specialCooldown);
+  if (id === 'ranged')  return Math.max(0, rangedCooldown);
+  if (id === 'recruit') return Math.max(0, recruitCooldown);
+  return 0;
+}
+
+// Thin wrappers so buttons call the right functions
+function doMeleeAction() {
+  // Move toward and attack nearest enemy
+  if (!player || !player.alive) return;
+  let enemies = entities.filter(e => e.alive && e.team !== player.team);
+  if (!enemies.length) return;
+  let nearest = enemies.sort((a,b)=>distFloat(player,a)-distFloat(player,b))[0];
+  if (distFloat(player, nearest) <= 1.3) {
+    performAttack(player, nearest);
+  } else {
+    player.moveVX = Math.sign(nearest.x - player.x);
+    player.moveVY = Math.sign(nearest.y - player.y);
+    addLog('Moving toward ' + nearest.name + '...', 'log-info');
+  }
+}
+function doSpecialAction() { if (player && player.alive) useSpecial(player); }
+function doFortifyAction() {
+  if (!player || !player.alive) return;
+  player.abilityActive.fortify = true;
+  addLog('🛡️ Bracing for impact...', 'log-info');
+}
+function doDashAction() {
+  if (!player || !player.alive) return;
+  // Move toward nearest castle or enemy
+  let target = castles.find(c => c.team !== player.team) || entities.find(e=>e.alive&&e.team!==player.team);
+  if (target) {
+    let speed = player.stats.spd * 3;
+    let dx = target.x-player.x, dy = target.y-player.y, len=Math.sqrt(dx*dx+dy*dy)||1;
+    player.x = Math.max(2,Math.min(MAP_SIZE-3,player.x+dx/len*Math.min(speed*0.5,len)));
+    player.y = Math.max(2,Math.min(MAP_SIZE-3,player.y+dy/len*Math.min(speed*0.5,len)));
+    addLog('💨 Dash!', 'log-info');
+  }
+}
+function doHealAction() {
+  if (!player || !player.alive) return;
+  let amt = 2;
+  player.hp = Math.min(player.maxHp, player.hp + amt);
+  spawnFloatingText(player.x, player.y, '+'+amt+' HP', '#44ff44');
+  addLog('💎 Recovered '+amt+' HP!', 'log-heal');
+}
+function doScoutAction() {
+  if (!player || !player.alive) return;
+  let range = 2 + player.stats.int * 2;
+  let near = entities.filter(e => e.alive && e.team !== player.team && distFloat(player,e) <= range);
+  if (!near.length) { addLog('📖 Nothing detected within '+range+' tiles.', 'log-info'); return; }
+  for (let e of near.slice(0,4)) {
+    addLog('👁️ '+e.name+' HP:'+e.hp+'/'+e.maxHp+' ATK:'+e.stats.atk+' DEF:'+e.stats.def, 'log-info');
+  }
+}
+function doRangedAction() { attemptRangedAttack(); }
+function doRecruitAction() { attemptRecruit(); }
+
+// ── Mob narration system ──────────────────────────────────────────────────────
+let narrationTimer = 0;
+let narrationQueue = []; // full log for chronicle
+let narrationIndex = 0; // which mob speaks next
+
+const MOB_QUIPS = {
+  winning: [
+    '{name} snarls: "This field belongs to us now!"',
+    '{name} roars: "Another castle falls! Victory is near!"',
+    '{name} cackles: "They scatter like rats!"',
+    '{name} bellows: "None shall stand against {team}!"',
+  ],
+  losing: [
+    '{name} growls: "We are outnumbered... regroup!"',
+    '{name} hisses: "Fall back! We need to rethink this."',
+    '{name} mutters: "They are stronger than expected..."',
+    '{name} warns: "Our castles are falling!"',
+  ],
+  combat: [
+    '{name} shouts: "For {team}! No mercy!"',
+    '{name} yells: "I\'ve taken wounds but I fight on!"',
+    '{name} sneers: "Is that all you\'ve got?"',
+    '{name} growls: "Blood and glory! CHARGE!"',
+  ],
+  retreat: [
+    '{name} gasps: "I need to fall back and recover..."',
+    '{name} pants: "The castle... I must reach it!"',
+    '{name} winces: "Just a few more steps..."',
+  ],
+  recharge: [
+    '{name} rests: "Gathering energy within these walls..."',
+    '{name} breathes: "The castle restores me."',
+    '{name} mutters: "Almost ready to return to battle."',
+  ],
+  castleCap: [
+    '{name} declares: "This fortress is ours! Raise the flag!"',
+    '{name} howls: "Castle taken! {team} expands its domain!"',
+  ],
+  idle: [
+    '{name} observes: "The field is quiet... for now."',
+    '{name} watches: "Where will the next clash be?"',
+    '{name} surveys: "I count the enemy with care."',
+  ],
+};
+
+function getMobNarration(mob) {
+  if (!mob || !mob.alive) return null;
+  const TEAM_NAMES = ['Chaos','Nature','Arcane','Iron'];
+  let teamName = TEAM_NAMES[mob.team] || 'Unknown';
+  // Pick quip category based on state
+  let cat = 'idle';
+  if (mob.aiState === 'retreat') cat = 'retreat';
+  else if (mob.aiState === 'recharge') cat = 'recharge';
+  else {
+    // Is this team winning (more alive mobs)?
+    let teamAlive = [0,0,0,0];
+    for (let e of entities) if (e.alive && e.team >= 0) teamAlive[e.team]++;
+    let myCount = teamAlive[mob.team] || 0;
+    let maxCount = Math.max(...teamAlive);
+    let totalAlive = teamAlive.reduce((a,b)=>a+b,0);
+    let recent = gameEvents.slice(-3).find(ev=>ev.type==='castle_captured');
+    if (recent && recent.detail && recent.detail.includes(teamName)) { cat = 'castleCap'; }
+    else if (myCount === maxCount) cat = 'winning';
+    else if (myCount < maxCount * 0.6) cat = 'losing';
+    else cat = 'combat';
+  }
+  let pool = MOB_QUIPS[cat] || MOB_QUIPS.idle;
+  let template = pool[Math.floor(Math.random() * pool.length)];
+  return template.replace(/{name}/g, mob.name).replace(/{team}/g, teamName);
+}
+
+function tickNarration(dt) {
+  narrationTimer += dt;
+  if (narrationTimer < 6) return;
+  narrationTimer = 0;
+  let alive = entities.filter(e => e.alive && !e.isPlayer);
+  if (!alive.length) return;
+  narrationIndex = (narrationIndex + 1) % alive.length;
+  let mob = alive[narrationIndex % alive.length];
+  let line = getMobNarration(mob);
+  if (!line) return;
+  let teamCol = TEAM_COLORS[mob.team] || '#aaa';
+  addLog(line, 'log-narrate', teamCol);
+  narrationQueue.push({ time: gameTime, mob: mob.name, team: mob.team, line });
+}
+
+function exportChronicle() {
+  let lines = [];
+  lines.push('═══════════════════════════════════════');
+  lines.push('  RPG ARENA — BATTLE CHRONICLE');
+  lines.push('═══════════════════════════════════════');
+  if (player) {
+    let pDisplay = player.displayName || player.name;
+    lines.push('Hero: ' + pDisplay + ' the ' + player.cls);
+    lines.push('Team: ' + (['CHAOS','NATURE','ARCANE','IRON'][player.team]||'Unknown'));
+    lines.push('Score: ' + (kills*10+itemsCollected*5+goalsCompleted*25+Math.floor(gameTime/10)));
+    lines.push('');
+  }
+  lines.push('── NARRATIVE ───────────────────────────');
+  lines.push(generateNarrative());
+  lines.push('');
+  lines.push('── MOB VOICES ──────────────────────────');
+  for (let n of narrationQueue) {
+    lines.push('['+Math.floor(n.time)+'s] '+n.line);
+  }
+  lines.push('');
+  lines.push('── EVENTS ──────────────────────────────');
+  for (let ev of gameEvents) {
+    lines.push('['+Math.floor(ev.time)+'s] '+ev.type+': '+ev.detail);
+  }
+  lines.push('');
+  lines.push('── COMBAT LOG ──────────────────────────');
+  for (let entry of combatLogEntries || []) {
+    lines.push(entry);
+  }
+  lines.push('═══════════════════════════════════════');
+  let text = lines.join('\n');
+  let blob = new Blob([text], {type:'text/plain'});
+  let a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'rpg-arena-chronicle.txt';
+  a.click();
+}
 
 // --- Team Definitions ---
 const TEAMS = [
@@ -1430,16 +1711,17 @@ function spawnFloatingText(x, y, text, color) {
 }
 
 // --- Combat Log ---
-function addLog(msg, cls) {
-  combatLogEntries.push({ msg, cls });
-  if (combatLogEntries.length > 100) combatLogEntries.shift();
+function addLog(msg, cls, color) {
+  combatLogEntries.push('['+Math.floor(gameTime)+'s] '+msg);
+  if (combatLogEntries.length > 200) combatLogEntries.shift();
   let logEl = document.getElementById('combat-log');
+  if (!logEl) return;
   let div = document.createElement('div');
   div.className = cls || '';
+  if (color) div.style.color = color;
   div.textContent = msg;
   logEl.appendChild(div);
-  // Trim DOM
-  while (logEl.children.length > 100) logEl.removeChild(logEl.firstChild);
+  while (logEl.children.length > 120) logEl.removeChild(logEl.firstChild);
   logEl.scrollTop = logEl.scrollHeight;
 }
 
@@ -2367,8 +2649,10 @@ function gameTick() {
     if (remotePlayers[id]._lastSeen && now - remotePlayers[id]._lastSeen > 5000) delete remotePlayers[id];
   }
 
+  tickNarration(0.5); // gameTick fires every ~500ms
   updateGoals();
   updateUI();
+  refreshActionButtons();
   broadcastState();
 }
 
@@ -2509,10 +2793,11 @@ function createCharacter() {
   let pp = isoProject(player.x, player.y);
   camera.x = pp.sx; camera.y = pp.sy;
 
+  let theme = detectTheme(name);
   addLog((player.displayName||player.name)+' the '+player.cls+' enters the arena!', 'log-info');
-  addLog('Ability: '+ABILITIES[player.cls].name+' - '+ABILITIES[player.cls].desc, 'log-info');
-  addLog('WASD/Arrows: move | Space: special | F: ranged attack | R: recruit | Walk into enemy: melee', 'log-info');
-  addLog('Use the Recruit button to command nearby enemies!', 'log-info');
+  addLog('Theme detected: '+theme.key.toUpperCase()+' | Ability: '+ABILITIES[player.cls].name, 'log-info');
+  addLog('Click action buttons below • WASD to move • buttons light up when ready', 'log-info');
+  buildActionButtons();
 
   if (isHost) {
     for (let i = 0; i < 8; i++) {
@@ -2572,6 +2857,8 @@ function respawn() {
   combatLogEntries = [];
   document.getElementById('combat-log').innerHTML = '';
   addLog((player.displayName||player.name)+' the '+player.cls+' returns!', 'log-info');
+  narrationTimer = 0; narrationQueue = [];
+  buildActionButtons();
 }
 
 function playerWait() {
